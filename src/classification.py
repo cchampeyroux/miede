@@ -10,8 +10,6 @@ Created on Mon Feb 23 14:57:08 2026
 import sys
 import os
 
-print(sys.executable)
-
 import numpy as np
 import pandas as pd
 
@@ -32,20 +30,53 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from src.clustering import get_features_pdl
 
+# helper for label I/O --------------------------------------------------
+# we use joblib.Memory to persist a cache on disk so that loading
+# sizeable CSVs/parquets is fast across separate Python sessions:
+from joblib import Memory
 
-path_src = "data/RES2-6-9-labels.csv"
-path_parent = "../data/RES2-6-9-labels.csv"
+# cache directory at project root (ignored by git via .gitignore)
+_cache_dir = os.path.join(os.path.dirname(__file__), "..", "cache")
+memory = Memory(_cache_dir, verbose=0)
 
-# On teste lequel des deux fonctionne pour ne plus avoir d'erreur
-if os.path.exists(path_src):
-    final_path = path_src
-else :
-    final_path = path_parent
-#-------------------------------------------
-# 1) Charger les labels (résultat du clustering)
-# ---------------------------------------------------
-labels = pd.read_csv(final_path)
+_LABEL_PATHS = (
+    "data/RES2-6-9-labels.csv",
+    "../data/RES2-6-9-labels.csv",
+)
 
+
+def _locate_labels_file() -> str:
+    """Return the first existing path or raise FileNotFoundError."""
+    for p in _LABEL_PATHS:
+        if os.path.exists(p):
+            return p
+    raise FileNotFoundError("labels source file not found")
+
+
+@memory.cache
+def load_labels() -> pd.DataFrame:
+    """Load the label file and return a DataFrame.
+
+    The first time this function is called the CSV is read and the result
+    is saved to the joblib cache; later calls (even in new Python
+    processes) will reuse the cached DataFrame unless the source file has
+    changed.  This gives us a *persistent* cache across runs.
+    """
+    source = _locate_labels_file()
+    print("Reading labels from:", source)
+    df = pd.read_csv(source)
+
+    # to make subsequent loads fast we also dump a parquet copy nearby
+    parquet_path = os.path.join(os.path.dirname(source), "RES2-6-9-labels.parquet")
+    try:
+        df.to_parquet(parquet_path, index=False)
+    except Exception:  # pragma: no cover - best effort
+        pass
+    return df
+
+
+# load dataset -------------------------------------------------------------
+labels = load_labels()
 
 # ---------------------------------------------------
 # 2) Définir les features (issues du notebook)
