@@ -53,9 +53,9 @@ def _locate_file() -> str:
 @memory.cache
 def _read_raw() -> pd.DataFrame:
     path = _locate_file()
-    print("in")
+    print("Computing features from raw data file:", path)
     df = pd.read_csv(path, sep=";", parse_dates=[COL_DT])
-    print("out")
+    print("Raw data loaded, shape:", df.shape)
     df[COL_DT] = pd.to_datetime(df[COL_DT], utc=True)
     df["date"] = df[COL_DT].dt.date
     df["hour"] = df[COL_DT].dt.hour + df[COL_DT].dt.minute / 60
@@ -241,7 +241,9 @@ def get_features_pdl(force: bool = False) -> pd.DataFrame:
     if force:
         # clear the joblib cache for all functions
         memory.clear(warn=False)
-    return _build_features().copy()
+    features = _build_features().copy()
+    features_clustered, _ = compute_clusters(features, n_clusters=10)
+    return features_clustered
 
 def compute_clusters(features_pdl: pd.DataFrame, n_clusters:int=10, random_state:int=42):
     from sklearn.preprocessing import StandardScaler
