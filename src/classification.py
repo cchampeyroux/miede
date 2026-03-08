@@ -10,10 +10,15 @@ Created on Mon Feb 23 14:57:08 2026
 import sys
 import os
 
+# Add project root to path for imports
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import numpy as np
 import pandas as pd
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split 
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
