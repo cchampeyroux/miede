@@ -9,6 +9,7 @@ Created on Mon Feb 23 14:57:08 2026
 
 import sys
 import os
+import matplotlib.pyplot as plt
 
 # Add project root to path for imports
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -197,7 +198,9 @@ logreg_model = Pipeline(steps=[
         random_state=42,
         max_iter=2000,
         class_weight="balanced",   # important pour RS minoritaire
-        solver="liblinear"         # robuste sur petits/moyens datasets
+        solver="liblinear",
+        C=0.1,                    
+        penalty="l1"             
     ))
 ])
 
@@ -223,7 +226,21 @@ for th in [0.30, 0.40, 0.50, 0.60, 0.70]:
     m = compute_metrics(y_test, y_pred_tmp)
     print(f"Seuil={th:.2f} | Precision={m['precision']:.3f} | Recall={m['recall']:.3f} | F1={m['f1']:.3f}")
 
+# Évaluation sur entraînement
+y_pred_train_logreg = logreg_model.predict(X_train)
+res_train_logreg = print_eval(y_train, y_pred_train_logreg, "Régression logistique - Entraînement")
 
+# Comparaison avec test
+res_test_logreg = print_eval(y_test, y_pred_logreg, "Régression logistique - Test")
+
+# Résumé comparatif
+print("\n=== Résumé comparatif Régression Logistique ===")
+print(f"Train - Precision: {res_train_logreg['precision']:.4f}, Recall: {res_train_logreg['recall']:.4f}, F1: {res_train_logreg['f1']:.4f}")
+print(f"Test  - Precision: {res_test_logreg['precision']:.4f}, Recall: {res_test_logreg['recall']:.4f}, F1: {res_test_logreg['f1']:.4f}")
+print(f"Écart (Train - Test) - Precision: {res_train_logreg['precision'] - res_test_logreg['precision']:.4f}, Recall: {res_train_logreg['recall'] - res_test_logreg['recall']:.4f}, F1: {res_train_logreg['f1'] - res_test_logreg['f1']:.4f}")
+
+# Probabilités pour entraînement (pour ajustement seuil si besoin)
+y_score_train_logreg = logreg_model.predict_proba(X_train)[:, 1]
 
 
 # ---------------------------------------------------
@@ -281,18 +298,66 @@ model = SimpleNN(input_size)
 criterion = nn.BCELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
+# Stockage des métriques pour les courbes d'apprentissage
+train_losses = []
+val_losses = []
+train_f1s = []
+val_f1s = []
+
 # Entraînement
 num_epochs = 100
 for epoch in range(num_epochs):
     model.train()
+    train_loss = 0
     for X_batch, y_batch in train_loader:
         optimizer.zero_grad()
         outputs = model(X_batch)
         loss = criterion(outputs, y_batch)
         loss.backward()
         optimizer.step()
+        train_loss += loss.item()
+    train_losses.append(train_loss / len(train_loader))
 
-# Évaluation
+    # Calcul F1 sur entraînement
+    with torch.no_grad():
+        y_pred_train = model(X_train_tensor).squeeze()
+        train_f1 = f1_score(y_train, (y_pred_train >= 0.5).int().numpy())
+    train_f1s.append(train_f1)
+
+    # Évaluation sur validation/test
+    model.eval()
+    with torch.no_grad():
+        val_loss = 0
+        for X_batch, y_batch in test_loader:
+            outputs = model(X_batch)
+            val_loss += criterion(outputs, y_batch).item()
+        val_losses.append(val_loss / len(test_loader))
+        y_pred_val = model(X_test_tensor).squeeze()
+        val_f1 = f1_score(y_test, (y_pred_val >= 0.5).int().numpy())
+        val_f1s.append(val_f1)
+
+    # Affichage par époque
+    print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Train F1: {train_f1s[-1]:.4f}, Val F1: {val_f1s[-1]:.4f}")
+
+    # Affichage par époque
+    print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Train F1: {train_f1s[-1]:.4f}, Val F1: {val_f1s[-1]:.4f}")
+
+# Tracer les courbes après l'entraînement
+plt.figure(figsize=(12, 5))
+plt.subplot(1, 2, 1)
+plt.plot(train_losses, label='Train Loss')
+plt.plot(val_losses, label='Val Loss')
+plt.legend()
+plt.title('Loss Curves')
+
+plt.subplot(1, 2, 2)
+plt.plot(train_f1s, label='Train F1')
+plt.plot(val_f1s, label='Val F1')
+plt.legend()
+plt.title('F1 Curves')
+plt.show()
+
+# Évaluation finale sur test
 model.eval()
 with torch.no_grad():
     y_score_nn = model(X_test_tensor).squeeze().numpy()
@@ -309,3 +374,16 @@ for th in [0.30, 0.40, 0.50, 0.60, 0.70]:
     y_pred_tmp = apply_threshold(y_score_nn, threshold=th)
     m = compute_metrics(y_test, y_pred_tmp)
     print(f"Seuil={th:.2f} | Precision={m['precision']:.3f} | Recall={m['recall']:.3f} | F1={m['f1']:.3f}")
+
+# Évaluation sur entraînement
+with torch.no_grad():
+    y_score_train_nn = model(X_train_tensor).squeeze().numpy()
+y_pred_train_nn = apply_threshold(y_score_train_nn, threshold=0.5)
+print_eval(y_train, y_pred_train_nn, "Réseau de neurones - Entraînement")
+
+# Comparaison avec test
+print_eval(y_test, y_pred_nn, "Réseau de neurones - Test")
+
+from sklearn.model_selection import cross_val_score
+scores = cross_val_score(logreg_model, X, y, cv=5, scoring='f1')  # 5 folds
+print(f"F1 CV: {scores.mean():.4f} ± {scores.std():.4f}")
