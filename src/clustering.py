@@ -13,6 +13,11 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 
+# persistent cache for feature computation
+from joblib import Memory
+_cache_dir = os.path.join(os.path.dirname(__file__), "..", "cache")
+memory = Memory(_cache_dir, verbose=0)
+
 # constants
 COL_PDL = "ID"
 COL_DT = "horodate"
@@ -33,7 +38,6 @@ cluster_to_label = {
     7: 1,
 }
 
-_cache = None
 
 
 # ----------------------------------------------------------------------------
@@ -46,10 +50,12 @@ def _locate_file() -> str:
             return p
     raise FileNotFoundError("raw data file not found")
 
-
+@memory.cache
 def _read_raw() -> pd.DataFrame:
     path = _locate_file()
+    print("in")
     df = pd.read_csv(path, sep=";", parse_dates=[COL_DT])
+    print("out")
     df[COL_DT] = pd.to_datetime(df[COL_DT], utc=True)
     df["date"] = df[COL_DT].dt.date
     df["hour"] = df[COL_DT].dt.hour + df[COL_DT].dt.minute / 60
@@ -78,6 +84,9 @@ def _compute_daily(df: pd.DataFrame) -> pd.DataFrame:
     daily["th_pdl"] = daily.groupby(COL_PDL)["daily_kwh"].transform(q20_positive)
     daily["is_active_day"] = (daily["daily_kwh"] >= daily["th_pdl"]).fillna(False)
     daily["month"] = pd.to_datetime(daily["date"]).dt.month
+    daily["dow"] = pd.to_datetime(daily["date"]).dt.dayofweek
+    daily["is_weekend"] = daily["dow"] >= 5
+    
     def season(m: int) -> str:
         if m in (12,1,2):
             return "winter"
@@ -205,13 +214,34 @@ feature_cols = [
     "r_global","r_mid","r_summer","r_winter",
 ]
 
-def get_features_pdl(force: bool=False) -> pd.DataFrame:
-    global _cache
-    if _cache is None or force:
-        raw = _read_raw()
-        daily = _compute_daily(raw)
-        _cache = _assemble_features(daily)
-    return _cache.copy()
+@memory.cache
+def _build_features() -> pd.DataFrame:
+    """Compute and return features_pdl from raw data.
+
+    This is the expensive work that we want to persist.  ``joblib`` will
+    cache the output to disk; subsequent calls (even in a new Python
+    process) will reuse the stored result unless inputs change.
+    """
+    raw = _read_raw()
+    print(raw.head())
+    daily = _compute_daily(raw)
+    return _assemble_features(daily)
+
+
+def get_features_pdl(force: bool = False) -> pd.DataFrame:
+    """Public accessor for PDL features.
+
+    Parameters
+    ----------
+    force : bool, default=False
+        If True the cache is cleared before recomputing.  This is handy if
+        the underlying raw data has been updated and you want to refresh
+        the cached result.
+    """
+    if force:
+        # clear the joblib cache for all functions
+        memory.clear(warn=False)
+    return _build_features().copy()
 
 def compute_clusters(features_pdl: pd.DataFrame, n_clusters:int=10, random_state:int=42):
     from sklearn.preprocessing import StandardScaler

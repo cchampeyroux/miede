@@ -1,2 +1,6 @@
 .venv/data/RES2-6-9.csv
+.venv/data/RES2-6-9_bis.csv
+.venv/data/daily.csv
 .venv/
+data/RES2-6-9.csv
+src/__pycache__/
