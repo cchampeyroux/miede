@@ -176,7 +176,7 @@ if __name__ == "__main__":
     print("="*70)
     
     # Nombre de PDLs à traiter (réduire pour plus de rapidité)
-    num_pdls_to_train = 10  # ⚡ Modifiez ce nombre pour plus/moins de PDLs
+    num_pdls_to_train = 10  # Modifiez ce nombre pour plus/moins de PDLs
     
     sample_pdls = df_consumption['ID'].unique()[:num_pdls_to_train]
     all_results = []
