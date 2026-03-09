@@ -114,7 +114,6 @@ df_model = (
 )
 
 
-#c'est bon jusqu'ici
 
 # Sécurisation (NaN / inf)
 X = df_model[feature_cols].replace([np.inf, -np.inf], np.nan)
@@ -305,7 +304,7 @@ train_f1s = []
 val_f1s = []
 
 # Entraînement
-num_epochs = 100
+num_epochs = 10
 for epoch in range(num_epochs):
     model.train()
     train_loss = 0
@@ -387,3 +386,41 @@ print_eval(y_test, y_pred_nn, "Réseau de neurones - Test")
 from sklearn.model_selection import cross_val_score
 scores = cross_val_score(logreg_model, X, y, cv=5, scoring='f1')  # 5 folds
 print(f"F1 CV: {scores.mean():.4f} ± {scores.std():.4f}")
+
+# ---------------------------------------------------
+# Sauvegarde des modèles entraînés
+# ---------------------------------------------------
+import joblib
+
+# Créer le dossier models s'il n'existe pas
+models_dir = os.path.join(os.path.dirname(__file__), "..", "models")
+os.makedirs(models_dir, exist_ok=True)
+
+# Sauvegarder le modèle de régression logistique
+logreg_path = os.path.join(models_dir, "logistic_regression_model.pkl")
+joblib.dump(logreg_model, logreg_path)
+print(f"Modèle de régression logistique sauvegardé : {logreg_path}")
+
+# Sauvegarder le modèle de réseau de neurones (PyTorch)
+nn_model_path = os.path.join(models_dir, "neural_network_model.pth")
+torch.save(model.state_dict(), nn_model_path)
+print(f"Modèle de réseau de neurones sauvegardé : {nn_model_path}")
+
+# Sauvegarder les préprocesseurs séparément
+imputer_path = os.path.join(models_dir, "imputer.pkl")
+joblib.dump(imputer, imputer_path)
+print(f"Imputer sauvegardé : {imputer_path}")
+
+scaler_path = os.path.join(models_dir, "scaler.pkl")
+joblib.dump(scaler, scaler_path)
+print(f"Scaler sauvegardé : {scaler_path}")
+
+# Sauvegarder la taille d'entrée pour recréer le modèle
+model_config_path = os.path.join(models_dir, "model_config.pkl")
+joblib.dump({'input_size': input_size}, model_config_path)
+print(f"Configuration du modèle sauvegardée : {model_config_path}")
+
+# Sauvegarder les colonnes de features pour vérification
+feature_cols_path = os.path.join(models_dir, "feature_columns.pkl")
+joblib.dump(feature_cols, feature_cols_path)
+print(f"Colonnes de features sauvegardées : {feature_cols_path}")
