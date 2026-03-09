@@ -386,7 +386,6 @@ print_eval(y_test, y_pred_nn, "Réseau de neurones - Test")
 from sklearn.model_selection import cross_val_score
 scores = cross_val_score(logreg_model, X, y, cv=5, scoring='f1')  # 5 folds
 print(f"F1 CV: {scores.mean():.4f} ± {scores.std():.4f}")
-
 # ---------------------------------------------------
 # Sauvegarde des modèles entraînés
 # ---------------------------------------------------
