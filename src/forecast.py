@@ -18,6 +18,8 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.statespace.sarimax import SARIMAX # Plus robuste que ARIMA pour les saisons
 
 # Supprimer les avertissements
 warnings.filterwarnings('ignore')
@@ -58,10 +60,28 @@ def load_consumption_data():
             
             # Bonus : Variable binaire très utile pour les modèles (1 = Week-end, 0 = Semaine)
             df['is_weekend'] = df['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
-            
+            df = get_french_calendar_features(df)
             return df.sort_values(['ID', 'date'])
     
     raise FileNotFoundError("Fichier daily.csv non trouvé")
+
+import holidays
+
+def get_french_calendar_features(df):
+    """
+    Ajoute les colonnes 'is_holiday' et 'is_school_holiday' au DataFrame
+    """
+    # Jours fériés français
+    fr_holidays = holidays.France(years=df['date'].dt.year.unique())
+    df['is_holiday'] = df['date'].apply(lambda x: 1 if x in fr_holidays else 0)
+    
+    # Vacances Scolaires (Logique simplifiée ou via API)
+    # Pour une précision totale, il faudrait les dates officielles du gouv.
+    # Ici, nous créons une colonne par défaut à 0. 
+    # CONSEIL : Si vous avez un fichier CSV des vacances, joignez-le ici.
+    df['is_school_holiday'] = 0 
+    
+    return df
 
 def get_pdl_timeseries(pdl_id, df_consumption):
     """Récupère la série temporelle pour un PDL"""
@@ -131,34 +151,34 @@ class LSTMForecaster(nn.Module):
 # ---------------------------------------------------
 # Entraînement des modèles de forecasting
 # ---------------------------------------------------
-def train_and_predict_models(pdl_id, df_consumption, days_ahead=7,lookback=30):
+import holidays
+
+def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
     """
-    Entraîne plusieurs modèles et fait des prédictions
-    
-    Parameters:
-    -----------
-    pdl_id : int
-        ID du PDL
-    df_consumption : pd.DataFrame
-        Données de consommation
-    days_ahead : int
-        Nombre de jours à prédire
-    
-    Returns:
-    --------
-    dict : Résultats de prédiction pour chaque modèle
+    Entraîne plusieurs modèles et fait des prédictions corrigées
     """
+    # 1. Préparation de l'historique annuel
     timeseries = get_pdl_timeseries(pdl_id, df_consumption)
-    # 2. Vérification et extraction des N dernières valeurs
-    # On vérifie si on a assez de données pour le lookback demandé
-    if len(timeseries) < lookback:
-        return {'error': f'Historique insuffisant ({len(timeseries)} points) pour un lookback de {lookback}'}
     
-    # MISE À JOUR : On ne garde que les 'lookback' dernières lignes
-    timeseries = timeseries.tail(lookback).copy()
-    print(timeseries)
-    consumption = timeseries['daily_kwh'].values
-    last_date = timeseries['date'].iloc[-1]
+    # Liste des features utilisée par la Régression (sans la cible)
+    features_lr = ['day_of_week', 'month', 'trend', 'is_holiday', 'is_weekend']
+    # Liste complète pour le LSTM (incluant la cible à l'index 0)
+    features_lstm = ['daily_kwh', 'day_of_week', 'month', 'trend', 'is_holiday', 'is_weekend']
+    print(f'Taille de la série {len(timeseries)}')
+    if len(timeseries) < 400:
+        print("Warning: Moins d'un an de données. La tendance annuelle sera estimée sur l'existant.")
+    
+    ts_train = timeseries.tail(400).copy()
+    consumption = ts_train['daily_kwh'].values
+    last_date = ts_train['date'].iloc[-1]
+    
+    # Extraction de la tendance
+    decomposition = seasonal_decompose(ts_train['daily_kwh'], model='additive', period=7)
+    ts_train['trend'] = decomposition.trend.fillna(method='bfill').fillna(method='ffill')
+    last_trend = ts_train['trend'].iloc[-1]
+    
+    # Objet pour les jours fériés français
+    fr_holidays = holidays.France()
     
     results = {
         'pdl_id': pdl_id,
@@ -169,180 +189,125 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7,lookback=30):
     }
     
     # ===== 1. Régression Linéaire =====
-    # ===== 1. Régression Linéaire (Améliorée avec features) =====
     try:
-        # 1. Préparation des variables d'entraînement (X) et de la cible (y)
-        X_lr = pd.DataFrame({
-            'day_of_week': timeseries['day_of_week'].values,
-            'is_weekend': timeseries['is_weekend'].values,
-            'month': timeseries["month"].values
-        })
-        y_lr = timeseries['daily_kwh'].values
+        X_lr = ts_train[features_lr]
+        y_lr = ts_train['daily_kwh']
+        model_lr = LinearRegression().fit(X_lr, y_lr)
         
-        # 2. Entraînement du modèle
-        model_lr = LinearRegression(fit_intercept=False)
-        model_lr.fit(X_lr, y_lr)
-        
-        # 3. Préparation des variables pour les jours futurs à prédire
         future_dates = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
-        future_day_of_week = [d.weekday() for d in future_dates] 
-        future_is_weekend = [1 if d >= 5 else 0 for d in future_day_of_week]
-        future_months = [d.month for d in future_dates] # NOUVEAU : On extrait le mois des dates futures
-        
         X_future_lr = pd.DataFrame({
-            'day_of_week': future_day_of_week,
-            'is_weekend': future_is_weekend,
-            'month': future_months # NOUVEAU : On utilise la liste générée juste au-dessus
+            'day_of_week': [d.weekday() for d in future_dates],
+            'month': [d.month for d in future_dates],
+            'trend': [last_trend] * days_ahead,
+            'is_holiday': [1 if d in fr_holidays else 0 for d in future_dates],
+            'is_weekend': [1 if d.weekday() >= 5 else 0 for d in future_dates]
         })
-        # 4. Prédictions
-        pred_lr = np.maximum(0, model_lr.predict(X_future_lr).flatten())
-        
         results['models']['linear_regression'] = {
-            'predictions': pred_lr.tolist(),
-            'model_name': 'Régression Linéaire (Calendaire)'
+            'predictions': np.maximum(0, model_lr.predict(X_future_lr)).tolist(),
+            'model_name': 'Régression (Saison + Tendance)'
         }
     except Exception as e:
         results['models']['linear_regression'] = {'error': str(e)}
-    
-    # ===== 2. ARIMA (Devenu SARIMA Saisonnier) =====
+        print({'error': str(e)})
+
+    # ===== 2. SARIMA =====
     if HAS_ARIMA:
         try:
-            # On utilise une année de données
-            data_arima = consumption[-min(365, len(consumption)):]
-            
-            # NOUVEAU : On ajoute seasonal_order=(1, 0, 0, 7)
-            # Le "7" est magique : il lui dit de regarder ce qu'il s'est passé le même jour la semaine dernière !
-            model_arima = ARIMA(
-                data_arima, 
-                order=(1, 1, 1), 
-                seasonal_order=(1, 0, 0, 7)
+            model_sarima = SARIMAX(
+                consumption,
+                order=(1, 1, 1),
+                seasonal_order=(1, 0, 0, 7),
+                enforce_stationarity=False,
+                enforce_invertibility=False
             )
-            
-            # Le modèle va prendre 2 ou 3 secondes de plus à s'entraîner car il est plus intelligent
-            fitted_model = model_arima.fit()
-            
-            # Prédictions
-            forecast_arima = fitted_model.get_forecast(steps=days_ahead)
-            pred_mean = np.array(forecast_arima.predicted_mean)
-            pred_arima = np.maximum(0, pred_mean)
-            
+            fitted_sarima = model_sarima.fit(disp=False)
+            forecast = fitted_sarima.get_forecast(steps=days_ahead)
             results['models']['arima'] = {
-                'predictions': pred_arima.tolist(),
-                'model_name': 'SARIMA (Saisonnier)'
+                'predictions': np.maximum(0, forecast.predicted_mean).tolist(),
+                'model_name': 'SARIMA (Trend + Weekly)'
             }
         except Exception as e:
             results['models']['arima'] = {'error': str(e)}
-    # ===== 3. LSTM (Multivarié / Calendaire) =====
+
+    # ===== 3. LSTM (Séquences Longues) =====
     try:
-        # 1. Sélectionner TOUTES les variables (Features)
-        features_df = timeseries[['daily_kwh', 'day_of_week', 'is_weekend', 'month']].copy()
-        feature_values = features_df.values
-        num_features = feature_values.shape[1] # Vaut 4 désormais (au lieu de 1)
-        
-        # 2. Double Normalisation 
-        # On utilise deux scalers : un pour normaliser toutes les entrées (X), 
-        # et un spécifiquement pour la cible (y) afin de faciliter la dénormalisation à la fin
+        # On utilise bien les 6 colonnes
+        features_df = ts_train[features_lstm].copy()
         scaler_X = MinMaxScaler()
-        scaled_features = scaler_X.fit_transform(feature_values)
+        scaled_features = scaler_X.fit_transform(features_df.values)
         
         scaler_y = MinMaxScaler()
-        scaled_target = scaler_y.fit_transform(feature_values[:, 0].reshape(-1, 1)).flatten()
+        # On fit le scaler_y uniquement sur la consommation pour faciliter l'inverse_transform
+        scaler_y.fit(features_df[['daily_kwh']])
         
-        # 3. Création des séquences multivariées (On remplace la fonction prepare_sequences)
-        X_lstm = []
-        y_lstm = []
+        X_lstm, y_lstm = [], []
         for i in range(len(scaled_features) - lookback):
-            X_lstm.append(scaled_features[i:i+lookback, :])  # Historique avec les 4 colonnes
-            y_lstm.append(scaled_features[i+lookback, 0])    # Cible = uniquement la conso (colonne 0)
+            X_lstm.append(scaled_features[i:i+lookback, :])
+            y_lstm.append(scaled_features[i+lookback, 0]) # Cible = conso
             
-        X_lstm = np.array(X_lstm)
-        y_lstm = np.array(y_lstm)
+        X_tensor = torch.tensor(np.array(X_lstm), dtype=torch.float32)
+        y_tensor = torch.tensor(np.array(y_lstm), dtype=torch.float32).unsqueeze(1)
         
-        if len(X_lstm) < 10:
-            raise ValueError("Pas assez de séquences pour entraîner LSTM")
-            
-        # 4. Conversion en Tenseurs PyTorch
-        X_lstm_tensor = torch.tensor(X_lstm, dtype=torch.float32)
-        y_lstm_tensor = torch.tensor(y_lstm, dtype=torch.float32).unsqueeze(1)
-        
-        # 5. Paramétrage optimisé du LSTM
-        device = torch.device('cpu')
-        model_lstm = LSTMForecaster(input_size=num_features, hidden_size=64, num_layers=2)
-        model_lstm.to(device)
-        
+        model_lstm = LSTMForecaster(input_size=len(features_lstm), hidden_size=64, num_layers=2)
+        optimizer = torch.optim.Adam(model_lstm.parameters(), lr=0.001)
         criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(model_lstm.parameters(), lr=0.001) # Learning rate plus doux
         
-        # Entraînement plus long (60 au lieu de 10) pour bien apprendre la dynamique des 4 variables
-        epochs = 60
-        for epoch in range(epochs):
+        for epoch in range(50):
             optimizer.zero_grad()
-            outputs = model_lstm(X_lstm_tensor)
-            loss = criterion(outputs, y_lstm_tensor)
+            outputs = model_lstm(X_tensor)
+            loss = criterion(outputs, y_tensor)
             loss.backward()
             optimizer.step()
             
-        # 6. Prédiction Auto-régressive avec injection du calendrier futur
-        last_sequence = scaled_features[-lookback:] # Les N derniers jours avec leurs 4 variables
-        current_sequence = last_sequence.copy()
-        
-        predictions_lstm = []
+        # Inférence récursive
+        curr_seq = scaled_features[-lookback:]
+        preds_lstm = []
         
         for i in range(days_ahead):
-            # Préparer le tenseur d'entrée (1 batch, longueur du lookback, 4 variables)
-            input_seq = torch.tensor(current_sequence, dtype=torch.float32).unsqueeze(0).to(device)
-            
-            # Prédire la conso de demain (normalisée)
+            input_t = torch.tensor(curr_seq, dtype=torch.float32).unsqueeze(0)
             with torch.no_grad():
-                next_pred_norm = model_lstm(input_seq).item()
+                p_norm = model_lstm(input_t).item()
+            preds_lstm.append(p_norm)
             
-            predictions_lstm.append(next_pred_norm)
+            next_d = last_date + timedelta(days=i+1)
             
-            # --- LA MAGIE EST ICI ---
-            # On construit la réalité calendaire de "demain" pour la glisser dans le modèle
-            next_date = last_date + timedelta(days=i+1)
-            next_dow = next_date.weekday()
-            next_is_wend = 1 if next_dow >= 5 else 0
-            next_month = next_date.month
+            # --- FIX DU BUG DES DIMENSIONS ---
+            # On prépare une ligne avec les 6 colonnes attendues par le scaler
+            next_row_raw = np.array([[
+                0, # Place holder pour la conso
+                next_d.weekday(), 
+                next_d.month, 
+                last_trend, 
+                1 if next_d in fr_holidays else 0, 
+                1 if next_d.weekday() >= 5 else 0
+            ]])
             
-            # On crée une ligne brute avec un faux 0 pour la conso, et les vraies infos calendaires
-            new_row_raw = np.array([[0, next_dow, next_is_wend, next_month]]) 
-            new_row_scaled = scaler_X.transform(new_row_raw)[0]
+            # On transforme avec le scaler (on récupère une ligne normalisée)
+            next_row_scaled = scaler_X.transform(next_row_raw)[0]
+            # On injecte la prédiction normalisée à l'index 0 (daily_kwh)
+            next_row_scaled[0] = p_norm
             
-            # On remplace le faux 0 par la vraie prédiction du modèle !
-            new_row_scaled[0] = next_pred_norm
+            # Mise à jour de la séquence
+            curr_seq = np.vstack((curr_seq[1:], next_row_scaled))
             
-            # On glisse la fenêtre : on enlève le jour le plus vieux (index 0), on ajoute "demain" à la fin
-            current_sequence = np.vstack((current_sequence[1:], new_row_scaled))
-            
-        # 7. Dénormalisation finale (Uniquement avec scaler_y pour retrouver nos kWh)
-        predictions_lstm_array = np.array(predictions_lstm).reshape(-1, 1)
-        pred_lstm = np.maximum(0, scaler_y.inverse_transform(predictions_lstm_array).flatten())
+        # Dénormalisation propre
+        preds_final = scaler_y.inverse_transform(np.array(preds_lstm).reshape(-1, 1)).flatten()
         
         results['models']['lstm'] = {
-            'predictions': pred_lstm.tolist(),
-            'model_name': 'LSTM (2 couches)'
+            'predictions': np.maximum(0, preds_final).tolist(),
+            'model_name': 'LSTM (Deep Trend)'
         }
     except Exception as e:
         results['models']['lstm'] = {'error': str(e)}
-    except Exception as e:
-        results['models']['lstm'] = {'error': str(e)}
-    
-    # Créer les dates futures
-    future_dates = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
-    results['dates'] = future_dates
-    
-    # Ensemble voting - moyenne des prédictions
-    all_predictions = []
-    for model_name, model_result in results['models'].items():
-        if 'predictions' in model_result:
-            all_predictions.append(model_result['predictions'])
-    
-    if all_predictions:
-        ensemble_pred = np.mean(all_predictions, axis=0)
+        print({'error': str(e)})
+
+    # Ensemble Voting
+    results['dates'] = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
+    all_preds = [m['predictions'] for m in results['models'].values() if 'predictions' in m]
+    if all_preds:
         results['ensemble'] = {
-            'predictions': ensemble_pred.tolist(),
-            'model_name': f'Ensemble ({len(all_predictions)} modèles)'
+            'predictions': np.mean(all_preds, axis=0).tolist(),
+            'model_name': f'Ensemble ({len(all_preds)} modèles)'
         }
     
     return results
@@ -381,9 +346,8 @@ def forecast_consumption_trend(pdl_id, df_consumption, days_ahead=7,lookback=30)
         'mean_consumption': np.mean(ensemble_pred),
         'std_consumption': np.std(ensemble_pred),
         'trend': 'stable',
-        'all_models_results': result.get('models', {}) # <-- NOUVEAU : On exporte le détail des modèles
+        'all_models_results': result.get('models', {})
     }
-
 
 def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30):
     """
@@ -430,7 +394,7 @@ def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30)
             print(f"   - {nom_modele:<20} : {mae_model:.2f} kWh/jour")
         
     # 6. Tracer le graphique de comparaison
-    history = ts_train # Garder 45 jours d'historique pour la lisibilité
+    history = ts_train.tail(45) # Garder 45 jours d'historique pour la lisibilité
     
     plt.figure(figsize=(12, 6))
     
@@ -536,7 +500,7 @@ if __name__ == "__main__":
         # ==========================================
         # 🎛️ TON PANNEAU DE CONTRÔLE CENTRALISÉ 🎛️
         # ==========================================
-        pdl_test_id = df_conso["ID"].unique()[1]
+        pdl_test_id = df_conso["ID"].unique()[8]
         test_days = 14     # Nombre de jours cachés pour évaluer le modèle
         forecast_days = 7  # Nombre de jours à prédire dans le vrai futur
         lookback_window = 14 # <-- CHANGE CETTE VALEUR POUR TESTER L'IMPACT SUR LE LSTM !
