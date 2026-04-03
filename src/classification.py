@@ -187,88 +187,51 @@ def apply_threshold(scores, threshold=0.5):
     return (scores >= threshold).astype(int)
 
 
-# ---------------------------------------------------
-# Modèle : Régression logistique
-# ---------------------------------------------------
-logreg_model = Pipeline(steps=[
-    ("imputer", SimpleImputer(strategy="median")),
-    ("scaler", StandardScaler()),
-    ("clf", LogisticRegression(
-        random_state=42,
-        max_iter=2000,
-        class_weight="balanced",   # important pour RS minoritaire
-        solver="liblinear",
-        C=0.1,                    
-        penalty="l1"             
-    ))
-])
+def train_and_evaluate_logistic_regression(X_train, y_train, X_test, y_test):
+    """Entraîne et évalue la régression logistique."""
+    logreg_model = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(
+            random_state=42,
+            max_iter=2000,
+            class_weight="balanced",
+            solver="liblinear",
+            C=0.1,
+            penalty="l1"
+        ))
+    ])
 
-# Entraînement
-logreg_model.fit(X_train, y_train)
+    # Entraînement
+    logreg_model.fit(X_train, y_train)
 
-# Probabilités de la classe 1 (RS)
-y_score_logreg = logreg_model.predict_proba(X_test)[:, 1]
+    # Probabilités
+    y_score_logreg = logreg_model.predict_proba(X_test)[:, 1]
+    y_score_train_logreg = logreg_model.predict_proba(X_train)[:, 1]
 
-# Seuil par défaut (0.5)
-threshold_logreg = 0.5
-y_pred_logreg = apply_threshold(y_score_logreg, threshold=threshold_logreg)
+    # Prédictions avec seuil par défaut
+    threshold_logreg = 0.5
+    y_pred_logreg = apply_threshold(y_score_logreg, threshold=threshold_logreg)
+    y_pred_train_logreg = apply_threshold(y_score_train_logreg, threshold=threshold_logreg)
 
-# Évaluation
-res_logreg = print_eval(y_test, y_pred_logreg, "Régression logistique")
+    # Évaluations
+    res_train_logreg = print_eval(y_train, y_pred_train_logreg, "Régression logistique - Entraînement")
+    res_test_logreg = print_eval(y_test, y_pred_logreg, "Régression logistique - Test")
 
+    # Résumé comparatif
+    print("\n=== Résumé comparatif Régression Logistique ===")
+    print(f"Train - Precision: {res_train_logreg['precision']:.4f}, Recall: {res_train_logreg['recall']:.4f}, F1: {res_train_logreg['f1']:.4f}")
+    print(f"Test  - Precision: {res_test_logreg['precision']:.4f}, Recall: {res_test_logreg['recall']:.4f}, F1: {res_test_logreg['f1']:.4f}")
+    print(f"Écart (Train - Test) - Precision: {res_train_logreg['precision'] - res_test_logreg['precision']:.4f}, Recall: {res_train_logreg['recall'] - res_test_logreg['recall']:.4f}, F1: {res_train_logreg['f1'] - res_test_logreg['f1']:.4f}")
 
+    # Ajustement du seuil
+    print("\nAjustement du seuil pour Régression Logistique:")
+    for th in [0.30, 0.40, 0.50, 0.60, 0.70]:
+        y_pred_tmp = apply_threshold(y_score_logreg, threshold=th)
+        m = compute_metrics(y_test, y_pred_tmp)
+        print(f"Seuil={th:.2f} | Precision={m['precision']:.3f} | Recall={m['recall']:.3f} | F1={m['f1']:.3f}")
 
-
-#option : on peut ajuster le seuil selon l'objectif métier (si on veut rater moins de RS 0.35, si on veut plus de précision 0.65) )
-for th in [0.30, 0.40, 0.50, 0.60, 0.70]:
-    y_pred_tmp = apply_threshold(y_score_logreg, threshold=th)
-    m = compute_metrics(y_test, y_pred_tmp)
-    print(f"Seuil={th:.2f} | Precision={m['precision']:.3f} | Recall={m['recall']:.3f} | F1={m['f1']:.3f}")
-
-# Évaluation sur entraînement
-y_pred_train_logreg = logreg_model.predict(X_train)
-res_train_logreg = print_eval(y_train, y_pred_train_logreg, "Régression logistique - Entraînement")
-
-# Comparaison avec test
-res_test_logreg = print_eval(y_test, y_pred_logreg, "Régression logistique - Test")
-
-# Résumé comparatif
-print("\n=== Résumé comparatif Régression Logistique ===")
-print(f"Train - Precision: {res_train_logreg['precision']:.4f}, Recall: {res_train_logreg['recall']:.4f}, F1: {res_train_logreg['f1']:.4f}")
-print(f"Test  - Precision: {res_test_logreg['precision']:.4f}, Recall: {res_test_logreg['recall']:.4f}, F1: {res_test_logreg['f1']:.4f}")
-print(f"Écart (Train - Test) - Precision: {res_train_logreg['precision'] - res_test_logreg['precision']:.4f}, Recall: {res_train_logreg['recall'] - res_test_logreg['recall']:.4f}, F1: {res_train_logreg['f1'] - res_test_logreg['f1']:.4f}")
-
-# Probabilités pour entraînement (pour ajustement seuil si besoin)
-y_score_train_logreg = logreg_model.predict_proba(X_train)[:, 1]
-
-
-# ---------------------------------------------------
-# Modèle : Réseau de neurones simple
-# ---------------------------------------------------
-
-# Préparation des données pour PyTorch
-# Imputation et scaling des données
-imputer = SimpleImputer(strategy="median")
-scaler = StandardScaler()
-
-X_train_imputed = imputer.fit_transform(X_train)
-X_train_scaled = scaler.fit_transform(X_train_imputed)
-
-X_test_imputed = imputer.transform(X_test)
-X_test_scaled = scaler.transform(X_test_imputed)
-
-# Conversion en tensors PyTorch
-X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
-y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1)
-X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
-y_test_tensor = torch.tensor(y_test.values, dtype=torch.float32).unsqueeze(1)
-
-# Création des DataLoaders
-train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-test_dataset = TensorDataset(X_test_tensor, y_test_tensor)
-
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    return logreg_model
 
 # Définition du modèle
 class SimpleNN(nn.Module):
@@ -289,103 +252,178 @@ class SimpleNN(nn.Module):
         x = self.sigmoid(x)
         return x
 
-# Initialisation du modèle
-input_size = X_train_scaled.shape[1]
-model = SimpleNN(input_size)
 
-# Fonction de perte et optimiseur
-criterion = nn.BCELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+def train_and_evaluate_neural_network(X_train_tensor, y_train_tensor, X_test_tensor, y_test_tensor, train_loader, test_loader, X_train, y_train, X_test, y_test):
+    """Entraîne et évalue le réseau de neurones avec early stopping."""
+    # Définition du modèle
+    input_size = X_train_tensor.shape[1]
+    model = SimpleNN(input_size)
 
-# Stockage des métriques pour les courbes d'apprentissage
-train_losses = []
-val_losses = []
-train_f1s = []
-val_f1s = []
+    # Fonction de perte et optimiseur
+    criterion = nn.BCELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-# Entraînement
-num_epochs = 10
-for epoch in range(num_epochs):
-    model.train()
-    train_loss = 0
-    for X_batch, y_batch in train_loader:
-        optimizer.zero_grad()
-        outputs = model(X_batch)
-        loss = criterion(outputs, y_batch)
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item()
-    train_losses.append(train_loss / len(train_loader))
+    # Stockage des métriques pour les courbes d'apprentissage
+    train_losses = []
+    val_losses = []
+    train_f1s = []
+    val_f1s = []
 
-    # Calcul F1 sur entraînement
-    with torch.no_grad():
-        y_pred_train = model(X_train_tensor).squeeze()
-        train_f1 = f1_score(y_train, (y_pred_train >= 0.5).int().numpy())
-    train_f1s.append(train_f1)
+    # Early stopping parameters
+    patience = 2
+    best_val_loss = float('inf')
+    counter = 0
+    best_model_state = None
 
-    # Évaluation sur validation/test
+    # Entraînement
+    num_epochs = 100
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss = 0
+        for X_batch, y_batch in train_loader:
+            optimizer.zero_grad()
+            outputs = model(X_batch)
+            loss = criterion(outputs, y_batch)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+        train_losses.append(train_loss / len(train_loader))
+
+        # Calcul F1 sur entraînement
+        with torch.no_grad():
+            y_pred_train = model(X_train_tensor).squeeze()
+            train_f1 = f1_score(y_train, (y_pred_train >= 0.5).int().numpy())
+        train_f1s.append(train_f1)
+
+        # Évaluation sur validation/test
+        model.eval()
+        with torch.no_grad():
+            val_loss = 0
+            for X_batch, y_batch in test_loader:
+                outputs = model(X_batch)
+                val_loss += criterion(outputs, y_batch).item()
+            val_losses.append(val_loss / len(test_loader))
+            y_pred_val = model(X_test_tensor).squeeze()
+            val_f1 = f1_score(y_test, (y_pred_val >= 0.5).int().numpy())
+            val_f1s.append(val_f1)
+
+        # Early stopping
+        if val_losses[-1] < best_val_loss:
+            best_val_loss = val_losses[-1]
+            counter = 0
+            best_model_state = model.state_dict().copy()
+            print(f"Meilleur modèle sauvegardé à l'époque {epoch+1}")
+        else:
+            counter += 1
+            print(f"Pas d'amélioration. Compteur: {counter}/{patience}")
+            if counter >= patience:
+                print("Early stopping activé.")
+                break
+
+        # Affichage par époque
+        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Train F1: {train_f1s[-1]:.4f}, Val F1: {val_f1s[-1]:.4f}")
+
+    # Charger le meilleur modèle
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        print("Meilleur modèle chargé.")
+
+    # Tracer les courbes
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label='Train Loss')
+    plt.plot(val_losses, label='Val Loss')
+    plt.legend()
+    plt.title('Loss Curves')
+
+    plt.subplot(1, 2, 2)
+    plt.plot(train_f1s, label='Train F1')
+    plt.plot(val_f1s, label='Val F1')
+    plt.legend()
+    plt.title('F1 Curves')
+    plt.show()
+
+    # Évaluation finale
     model.eval()
     with torch.no_grad():
-        val_loss = 0
-        for X_batch, y_batch in test_loader:
-            outputs = model(X_batch)
-            val_loss += criterion(outputs, y_batch).item()
-        val_losses.append(val_loss / len(test_loader))
-        y_pred_val = model(X_test_tensor).squeeze()
-        val_f1 = f1_score(y_test, (y_pred_val >= 0.5).int().numpy())
-        val_f1s.append(val_f1)
+        y_score_nn = model(X_test_tensor).squeeze().numpy()
+        y_score_train_nn = model(X_train_tensor).squeeze().numpy()
 
-    # Affichage par époque
-    print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Train F1: {train_f1s[-1]:.4f}, Val F1: {val_f1s[-1]:.4f}")
+    threshold_nn = 0.5
+    y_pred_nn = apply_threshold(y_score_nn, threshold=threshold_nn)
+    y_pred_train_nn = apply_threshold(y_score_train_nn, threshold=threshold_nn)
 
-    # Affichage par époque
-    print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Train F1: {train_f1s[-1]:.4f}, Val F1: {val_f1s[-1]:.4f}")
+    res_train_nn = print_eval(y_train, y_pred_train_nn, "Réseau de neurones - Entraînement")
+    res_test_nn = print_eval(y_test, y_pred_nn, "Réseau de neurones - Test")
 
-# Tracer les courbes après l'entraînement
-plt.figure(figsize=(12, 5))
-plt.subplot(1, 2, 1)
-plt.plot(train_losses, label='Train Loss')
-plt.plot(val_losses, label='Val Loss')
-plt.legend()
-plt.title('Loss Curves')
+    # Résumé comparatif
+    print("\n=== Résumé comparatif Réseau de Neurones ===")
+    print(f"Train - Precision: {res_train_nn['precision']:.4f}, Recall: {res_train_nn['recall']:.4f}, F1: {res_train_nn['f1']:.4f}")
+    print(f"Test  - Precision: {res_test_nn['precision']:.4f}, Recall: {res_test_nn['recall']:.4f}, F1: {res_test_nn['f1']:.4f}")
+    print(f"Écart (Train - Test) - Precision: {res_train_nn['precision'] - res_test_nn['precision']:.4f}, Recall: {res_train_nn['recall'] - res_test_nn['recall']:.4f}, F1: {res_train_nn['f1'] - res_test_nn['f1']:.4f}")
 
-plt.subplot(1, 2, 2)
-plt.plot(train_f1s, label='Train F1')
-plt.plot(val_f1s, label='Val F1')
-plt.legend()
-plt.title('F1 Curves')
-plt.show()
+    # Ajustement du seuil
+    print("\nAjustement du seuil pour Réseau de Neurones:")
+    for th in [0.30, 0.40, 0.50, 0.60, 0.70]:
+        y_pred_tmp = apply_threshold(y_score_nn, threshold=th)
+        m = compute_metrics(y_test, y_pred_tmp)
+        print(f"Seuil={th:.2f} | Precision={m['precision']:.3f} | Recall={m['recall']:.3f} | F1={m['f1']:.3f}")
 
-# Évaluation finale sur test
-model.eval()
+    return model
+
+
+# ---------------------------------------------------
+# Modèle : Régression logistique
+# ---------------------------------------------------
+logreg_model = train_and_evaluate_logistic_regression(X_train, y_train, X_test, y_test)
+
+# Validation croisée pour régression logistique
+from sklearn.model_selection import cross_val_score
+scores = cross_val_score(logreg_model, X, y, cv=5, scoring='f1')
+print(f"F1 CV pour Régression Logistique: {scores.mean():.4f} ± {scores.std():.4f}")
+
+
+# Préparation des données pour NN
+imputer = SimpleImputer(strategy="median")
+scaler = StandardScaler()
+
+X_train_imputed = imputer.fit_transform(X_train)
+X_train_scaled = scaler.fit_transform(X_train_imputed)
+
+X_test_imputed = imputer.transform(X_test)
+X_test_scaled = scaler.transform(X_test_imputed)
+
+X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
+y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1)
+X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
+y_test_tensor = torch.tensor(y_test.values, dtype=torch.float32).unsqueeze(1)
+
+train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+test_dataset = TensorDataset(X_test_tensor, y_test_tensor)
+
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+nn_model = train_and_evaluate_neural_network(X_train_tensor, y_train_tensor, X_test_tensor, y_test_tensor, train_loader, test_loader, X_train, y_train, X_test, y_test)
+
+# ---------------------------------------------------
+# Évaluations finales hors fonction
+# ---------------------------------------------------
+nn_model.eval()
 with torch.no_grad():
-    y_score_nn = model(X_test_tensor).squeeze().numpy()
+    y_score_train_nn = nn_model(X_train_tensor).squeeze().numpy()
+    y_score_test_nn = nn_model(X_test_tensor).squeeze().numpy()
 
-# Seuil par défaut (0.5)
-threshold_nn = 0.5
-y_pred_nn = apply_threshold(y_score_nn, threshold=threshold_nn)
-
-# Évaluation
-res_nn = print_eval(y_test, y_pred_nn, "Réseau de neurones simple")
-
-# Ajustement du seuil
-for th in [0.30, 0.40, 0.50, 0.60, 0.70]:
-    y_pred_tmp = apply_threshold(y_score_nn, threshold=th)
-    m = compute_metrics(y_test, y_pred_tmp)
-    print(f"Seuil={th:.2f} | Precision={m['precision']:.3f} | Recall={m['recall']:.3f} | F1={m['f1']:.3f}")
-
-# Évaluation sur entraînement
-with torch.no_grad():
-    y_score_train_nn = model(X_train_tensor).squeeze().numpy()
 y_pred_train_nn = apply_threshold(y_score_train_nn, threshold=0.5)
-print_eval(y_train, y_pred_train_nn, "Réseau de neurones - Entraînement")
+y_pred_nn = apply_threshold(y_score_test_nn, threshold=0.5)
 
-# Comparaison avec test
+print_eval(y_train, y_pred_train_nn, "Réseau de neurones - Entraînement")
 print_eval(y_test, y_pred_nn, "Réseau de neurones - Test")
 
 from sklearn.model_selection import cross_val_score
 scores = cross_val_score(logreg_model, X, y, cv=5, scoring='f1')  # 5 folds
-print(f"F1 CV: {scores.mean():.4f} ± {scores.std():.4f}")
+print(f"F1 CV (Régression logistique): {scores.mean():.4f} ± {scores.std():.4f}")
+
 # ---------------------------------------------------
 # Sauvegarde des modèles entraînés
 # ---------------------------------------------------
@@ -402,7 +440,7 @@ print(f"Modèle de régression logistique sauvegardé : {logreg_path}")
 
 # Sauvegarder le modèle de réseau de neurones (PyTorch)
 nn_model_path = os.path.join(models_dir, "neural_network_model.pth")
-torch.save(model.state_dict(), nn_model_path)
+torch.save(nn_model.state_dict(), nn_model_path)
 print(f"Modèle de réseau de neurones sauvegardé : {nn_model_path}")
 
 # Sauvegarder les préprocesseurs séparément
@@ -414,12 +452,13 @@ scaler_path = os.path.join(models_dir, "scaler.pkl")
 joblib.dump(scaler, scaler_path)
 print(f"Scaler sauvegardé : {scaler_path}")
 
-# Sauvegarder la taille d'entrée pour recréer le modèle
+# Sauvegarder la taille d'entrée pour pouvoir instancier (reconstruire) le modèle NN plus tard
+input_size = X_train_tensor.shape[1]
 model_config_path = os.path.join(models_dir, "model_config.pkl")
 joblib.dump({'input_size': input_size}, model_config_path)
 print(f"Configuration du modèle sauvegardée : {model_config_path}")
 
-# Sauvegarder les colonnes de features pour vérification
+# Sauvegarder les colonnes de features pour vérification/prédiction future
 feature_cols_path = os.path.join(models_dir, "feature_columns.pkl")
 joblib.dump(feature_cols, feature_cols_path)
 print(f"Colonnes de features sauvegardées : {feature_cols_path}")
