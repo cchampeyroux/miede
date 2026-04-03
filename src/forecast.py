@@ -167,10 +167,10 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
     # Liste complète pour le LSTM (incluant la cible à l'index 0)
     features_lstm = ['daily_kwh', 'day_of_week', 'month', 'trend', 'is_holiday', 'is_weekend']
     print(f'Taille de la série {len(timeseries)}')
-    if len(timeseries) < 400:
+    if len(timeseries) < 365:
         print("Warning: Moins d'un an de données. La tendance annuelle sera estimée sur l'existant.")
     
-    ts_train = timeseries.tail(400).copy()
+    ts_train = timeseries.tail(365).copy()
     consumption = ts_train['daily_kwh'].values
     last_date = ts_train['date'].iloc[-1]
     
@@ -233,20 +233,28 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
 
     # ===== 3. LSTM (Séquences Longues) =====
     try:
-        # On utilise bien les 6 colonnes
         features_df = ts_train[features_lstm].copy()
+        
+        # SÉCURITÉ : Vérifie si le dataset est plus grand que la taille de la séquence
+        if len(features_df) <= lookback:
+            raise ValueError(f"Historique de {len(features_df)}j trop court pour une séquence de {lookback}j.")
+        
         scaler_X = MinMaxScaler()
         scaled_features = scaler_X.fit_transform(features_df.values)
         
         scaler_y = MinMaxScaler()
-        # On fit le scaler_y uniquement sur la consommation pour faciliter l'inverse_transform
         scaler_y.fit(features_df[['daily_kwh']])
         
+        # --- CRÉATION DES SÉQUENCES SUR TOUT LE DATASET ---
         X_lstm, y_lstm = [], []
+        # La boucle parcourt TOUT le dataset moins la longueur de la fenêtre
         for i in range(len(scaled_features) - lookback):
+            # X = Les N jours précédents (fenêtre complète)
             X_lstm.append(scaled_features[i:i+lookback, :])
-            y_lstm.append(scaled_features[i+lookback, 0]) # Cible = conso
+            # Y = La consommation du jour SUIVANT la fenêtre
+            y_lstm.append(scaled_features[i+lookback, 0])
             
+        # Conversion en tenseurs 3D pour PyTorch (Batch, Sequence, Features)
         X_tensor = torch.tensor(np.array(X_lstm), dtype=torch.float32)
         y_tensor = torch.tensor(np.array(y_lstm), dtype=torch.float32).unsqueeze(1)
         
@@ -254,6 +262,7 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
         optimizer = torch.optim.Adam(model_lstm.parameters(), lr=0.001)
         criterion = nn.MSELoss()
         
+        # Entraînement sur l'ensemble des fenêtres générées
         for epoch in range(50):
             optimizer.zero_grad()
             outputs = model_lstm(X_tensor)
@@ -261,11 +270,13 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
             loss.backward()
             optimizer.step()
             
-        # Inférence récursive
+        # --- INFÉRENCE (Prédiction du futur) ---
+        # On part de la TOUTE DERNIÈRE séquence connue du dataset
         curr_seq = scaled_features[-lookback:]
         preds_lstm = []
         
         for i in range(days_ahead):
+            # On ajoute une dimension "Batch" fictive pour l'inférence
             input_t = torch.tensor(curr_seq, dtype=torch.float32).unsqueeze(0)
             with torch.no_grad():
                 p_norm = model_lstm(input_t).item()
@@ -273,10 +284,9 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
             
             next_d = last_date + timedelta(days=i+1)
             
-            # --- FIX DU BUG DES DIMENSIONS ---
-            # On prépare une ligne avec les 6 colonnes attendues par le scaler
+            # On construit la réalité de demain
             next_row_raw = np.array([[
-                0, # Place holder pour la conso
+                0, # Placeholder (remplacé juste après)
                 next_d.weekday(), 
                 next_d.month, 
                 last_trend, 
@@ -284,12 +294,10 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
                 1 if next_d.weekday() >= 5 else 0
             ]])
             
-            # On transforme avec le scaler (on récupère une ligne normalisée)
             next_row_scaled = scaler_X.transform(next_row_raw)[0]
-            # On injecte la prédiction normalisée à l'index 0 (daily_kwh)
-            next_row_scaled[0] = p_norm
+            next_row_scaled[0] = p_norm # Injection de la prédiction
             
-            # Mise à jour de la séquence
+            # Glissement de la fenêtre : on supprime le jour le plus vieux, on ajoute demain
             curr_seq = np.vstack((curr_seq[1:], next_row_scaled))
             
         # Dénormalisation propre
@@ -300,8 +308,8 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
             'model_name': 'LSTM'
         }
     except Exception as e:
-        results['models']['lstm'] = {'error': str(e)}
-        print({'error': str(e)})
+        results['models']['lstm'] = {'error': f"LSTM: {str(e)}"}
+        print({'error': f"LSTM: {str(e)}"})
 
     # Ensemble Voting
     results['dates'] = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
@@ -396,7 +404,7 @@ def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30)
             print(f"   - {nom_modele:<20} : {mae_model:.2f} kWh/jour")
         
     # 6. Tracer le graphique de comparaison
-    history = ts_train.tail(45) # Garder 45 jours d'historique pour la lisibilité
+    history = ts_train.tail(lookback+test_days) # Garder 45 jours d'historique pour la lisibilité
     
     # Création de la figure interactive Plotly
     fig = go.Figure()

@@ -39,8 +39,8 @@ def main():
 
     with tab2:
         st.subheader("Évaluation de la performance")
-        lookback_window = st.slider("Fenêtre d'historique (Lookback)", 7, 60, 14)
-        test_days = st.slider("Jours de test (Backtest)", 7, 30, 14)
+        lookback_window = st.slider("Fenêtre d'historique (Lookback)", 3, 365, 14)
+        test_days = st.slider("Jours de test (Backtest)", 1, 30, 14)
 
         if st.button("Lancer le Backtest"):
             with st.spinner("Entraînement des modèles en cours..."):
