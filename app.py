@@ -1,5 +1,6 @@
 import streamlit as st
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 from src.forecast import load_consumption_data,get_pdl_timeseries,evaluate_and_plot_backtest,forecast_consumption_trend,plot_forecast
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Energy Forecast Dashboard", layout="wide")

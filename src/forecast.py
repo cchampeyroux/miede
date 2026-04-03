@@ -18,6 +18,8 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import streamlit as st
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.statespace.sarimax import SARIMAX # Plus robuste que ARIMA pour les saisons
 
@@ -204,7 +206,7 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
         })
         results['models']['linear_regression'] = {
             'predictions': np.maximum(0, model_lr.predict(X_future_lr)).tolist(),
-            'model_name': 'Régression (Saison + Tendance)'
+            'model_name': 'Régression'
         }
     except Exception as e:
         results['models']['linear_regression'] = {'error': str(e)}
@@ -224,7 +226,7 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
             forecast = fitted_sarima.get_forecast(steps=days_ahead)
             results['models']['arima'] = {
                 'predictions': np.maximum(0, forecast.predicted_mean).tolist(),
-                'model_name': 'SARIMA (Trend + Weekly)'
+                'model_name': 'SARIMA'
             }
         except Exception as e:
             results['models']['arima'] = {'error': str(e)}
@@ -295,7 +297,7 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
         
         results['models']['lstm'] = {
             'predictions': np.maximum(0, preds_final).tolist(),
-            'model_name': 'LSTM (Deep Trend)'
+            'model_name': 'LSTM'
         }
     except Exception as e:
         results['models']['lstm'] = {'error': str(e)}
@@ -355,7 +357,7 @@ def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30)
     Masque les 'test_days' derniers jours, prédit dessus, et affiche la comparaison
     avec TOUS les modèles individuels.
     """
-    # 1. Récupérer la série complète
+    # 1. Récupérer la série complèt
     ts = get_pdl_timeseries(pdl_id, df_consumption)
     
     if len(ts) <= test_days + 30:
@@ -396,97 +398,177 @@ def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30)
     # 6. Tracer le graphique de comparaison
     history = ts_train.tail(45) # Garder 45 jours d'historique pour la lisibilité
     
-    plt.figure(figsize=(12, 6))
-    
-    # Tracer le Passé (Train)
-    plt.plot(history['date'], history['daily_kwh'], 
-             label='Historique (Entraînement)', color='#1f77b4', marker='.')
-             
+    # Création de la figure interactive Plotly
+    fig = go.Figure()
+
+    # 1. Tracer le Passé (Train)
+    fig.add_trace(go.Scatter(
+        x=history['date'], 
+        y=history['daily_kwh'],
+        mode='lines+markers',
+        name='Historique (Entraînement)',
+        line=dict(color='#1f77b4', width=2),
+        marker=dict(size=5)
+    ))
+
     last_date = history['date'].iloc[-1]
     last_val = history['daily_kwh'].iloc[-1]
-    dates_pred = resultats_backtest['dates']
-    
+    dates_pred = list(resultats_backtest['dates']) # S'assurer que c'est une liste
+
     # Palette de couleurs pour les modèles
     colors = {'linear_regression': '#2ca02c', 'arima': '#9467bd', 'lstm': '#ff7f0e'}
-    
-    # Tracer TOUS les modèles individuels
+
+    # 2. Tracer TOUS les modèles individuels
     for model_key, model_info in all_models.items():
         if 'predictions' in model_info:
-            preds = model_info['predictions']
+            preds = list(model_info['predictions'])
             name = model_info.get('model_name', model_key)
             c = colors.get(model_key, '#8c564b')
-            plt.plot(dates_pred, preds, label=f"Prédiction ({name})", color=c, linewidth=1.5, linestyle='-.', alpha=0.8)
-            plt.plot([last_date, dates_pred[0]], [last_val, preds[0]], color=c, linewidth=1.5, linestyle='-.', alpha=0.8)
-    
-    # Tracer la prédiction ENSEMBLE (plus épaisse, en rouge)
-    plt.plot(dates_pred, predictions_ensemble, 
-             label='Prédictions (Ensemble)', color='#d62728', linestyle='--', marker='X', linewidth=2.5)
-    plt.plot([last_date, dates_pred[0]], [last_val, predictions_ensemble[0]], color='#d62728', linestyle='--', linewidth=2.5)
+            
+            # On fusionne la dernière valeur d'historique avec les prédictions pour relier les courbes
+            x_pred = [last_date] + dates_pred
+            y_pred = [last_val] + preds
+            
+            fig.add_trace(go.Scatter(
+                x=x_pred, 
+                y=y_pred,
+                mode='lines',
+                name=f"Prédiction {name}",
+                line=dict(color=c, width=1.5, dash='dashdot'),
+                opacity=0.8
+            ))
 
-    # Tracer la RÉALITÉ cachée au modèle (Test) - en NOIR pour bien ressortir
-    plt.plot(ts_test['date'], ts_test['daily_kwh'], 
-             label='Vraie consommation (RÉALITÉ)', color='black', marker='o', linewidth=2.5)
-    plt.plot([last_date, ts_test['date'].iloc[0]], [last_val, ts_test['daily_kwh'].iloc[0]], color='black', linewidth=2.5)
-    
-    plt.title(f'Backtest des Prévisions (Comparaison Réalité vs Tous Modèles) - PDL : {pdl_id}', fontsize=14)
-    plt.xlabel('Date')
-    plt.ylabel('Consommation (kWh)')
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(fontsize=11)
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.show()
+    # 3. Tracer la prédiction ENSEMBLE (plus épaisse, en rouge)
+    x_ens = [last_date] + dates_pred
+    y_ens = [last_val] + list(predictions_ensemble)
+
+    fig.add_trace(go.Scatter(
+        x=x_ens, 
+        y=y_ens,
+        mode='lines+markers',
+        name='Prédictions (Ensemble)',
+        line=dict(color='#d62728', width=3, dash='dash'),
+        marker=dict(symbol='x', size=8)
+    ))
+
+    # 4. Tracer la RÉALITÉ cachée au modèle (Test) - en NOIR
+    x_test = [last_date] + list(ts_test['date'])
+    y_test = [last_val] + list(ts_test['daily_kwh'])
+
+    fig.add_trace(go.Scatter(
+        x=x_test, 
+        y=y_test,
+        mode='lines+markers',
+        name='Consommation historique (Réalité)',
+        line=dict(color='black', width=3),
+        marker=dict(symbol='circle', size=6)
+    ))
+
+    # 5. Mise en page du graphique
+    fig.update_layout(
+        title=f'Backtest des Prévisions - PDL : {pdl_id}',
+        xaxis_title='Date',
+        yaxis_title='Consommation (kWh)',
+        hovermode='x unified', # MAGIQUE : Affiche une barre verticale avec toutes les valeurs au survol
+        template='plotly_white',
+        legend=dict(
+            orientation="h", 
+            yanchor="bottom", 
+            y=1.02, 
+            xanchor="right", 
+            x=1
+        ),
+        margin=dict(l=20, r=20, t=50, b=20)
+    )
+
+    # 6. Affichage dans Streamlit
+    st.plotly_chart(fig, use_container_width=True)
+
 
 def plot_forecast(pdl_id, df_consumption, dates, ensemble_preds=None, all_models_dict=None, days_history=60):
     """
-    Affiche le graphique de l'historique récent et toutes les prédictions (Ensemble + modèles individuels).
+    Affiche le graphique interactif (Plotly) de l'historique récent et toutes les prédictions
+    (Ensemble + modèles individuels) pour le FUTUR.
     """
     timeseries = get_pdl_timeseries(pdl_id, df_consumption)
     history = timeseries.tail(days_history)
     
-    plt.figure(figsize=(12, 6))
+    # Création de la figure interactive Plotly
+    fig = go.Figure()
     
     # 1. Tracer l'historique
-    plt.plot(history['date'], history['daily_kwh'], 
-             label='Historique de consommation', 
-             color='#1f77b4', linewidth=2, marker='.')
+    fig.add_trace(go.Scatter(
+        x=history['date'], 
+        y=history['daily_kwh'],
+        mode='lines+markers',
+        name='Historique de consommation',
+        line=dict(color='#1f77b4', width=2),
+        marker=dict(size=5)
+    ))
     
     last_date = history['date'].iloc[-1] if not history.empty else None
     last_val = history['daily_kwh'].iloc[-1] if not history.empty else None
+    
+    # S'assurer que les dates futures sont bien dans une liste
+    dates_list = list(dates)
 
-    # Palette de couleurs pour différencier les modèles individuels
+    # Palette de couleurs pour différencier les modèles
     colors = {'linear_regression': '#2ca02c', 'arima': '#9467bd', 'lstm': '#ff7f0e'}
     
     # 2. Tracer les modèles individuels
-    if all_models_dict:
+    if all_models_dict and last_date is not None:
         for model_key, model_info in all_models_dict.items():
             if 'predictions' in model_info:
-                preds = model_info['predictions']
+                preds = list(model_info['predictions'])
                 name = model_info.get('model_name', model_key)
-                c = colors.get(model_key, '#8c564b') # Couleur par défaut si modèle inconnu
+                c = colors.get(model_key, '#8c564b') # Couleur marron par défaut si non trouvée
                 
-                plt.plot(dates, preds, label=name, color=c, linewidth=1.5, linestyle='-.', alpha=0.8)
+                # Relier le passé au futur
+                x_pred = [last_date] + dates_list
+                y_pred = [last_val] + preds
                 
-                # Relier à l'historique
-                if last_date is not None:
-                    plt.plot([last_date, dates[0]], [last_val, preds[0]], color=c, linewidth=1.5, linestyle='-.', alpha=0.8)
+                fig.add_trace(go.Scatter(
+                    x=x_pred, 
+                    y=y_pred,
+                    mode='lines',
+                    name=f"Prédiction {name}",
+                    line=dict(color=c, width=1.5, dash='dashdot'),
+                    opacity=0.8
+                ))
 
     # 3. Tracer la prédiction Ensemble (par dessus, plus épaisse)
-    if ensemble_preds is not None:
-        plt.plot(dates, ensemble_preds, label='Ensemble (Moyenne)', color='#d62728', linewidth=3, linestyle='--', marker='o')
-        if last_date is not None:
-            plt.plot([last_date, dates[0]], [last_val, ensemble_preds[0]], color='#d62728', linewidth=3, linestyle='--')
+    if ensemble_preds is not None and last_date is not None:
+        x_ens = [last_date] + dates_list
+        y_ens = [last_val] + list(ensemble_preds)
+        
+        fig.add_trace(go.Scatter(
+            x=x_ens, 
+            y=y_ens,
+            mode='lines+markers',
+            name='Ensemble (Moyenne)',
+            line=dict(color='#d62728', width=3, dash='dash'),
+            marker=dict(symbol='x', size=8)
+        ))
     
-    # Personnalisation
-    plt.title(f'Prévisions de Consommation - Tous les Modèles - PDL ID : {pdl_id}', fontsize=14, pad=15)
-    plt.xlabel('Date', fontsize=12)
-    plt.ylabel('Consommation (kWh)', fontsize=12)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(fontsize=11)
+    # 4. Mise en page du graphique
+    fig.update_layout(
+        title=f'Prévisions de Consommation - Tous les Modèles - PDL ID : {pdl_id}',
+        xaxis_title='Date',
+        yaxis_title='Consommation (kWh)',
+        hovermode='x unified', # Permet de voir toutes les valeurs au survol d'une date
+        template='plotly_white',
+        legend=dict(
+            orientation="h", 
+            yanchor="bottom", 
+            y=1.02, 
+            xanchor="right", 
+            x=1
+        ),
+        margin=dict(l=20, r=20, t=50, b=20)
+    )
     
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.show()
+    # 5. Affichage direct dans Streamlit
+    st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------------------------------
 # Bloc d'exécution principal pour tester le script
