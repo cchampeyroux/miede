@@ -22,7 +22,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.statespace.sarimax import SARIMAX # Plus robuste que ARIMA pour les saisons
-
+from src.clustering import get_features_pdl
 # Supprimer les avertissements
 warnings.filterwarnings('ignore')
 
@@ -66,6 +66,12 @@ def load_consumption_data():
             return df.sort_values(['ID', 'date'])
     
     raise FileNotFoundError("Fichier daily.csv non trouvé")
+
+def load_cluster_assignments():
+    """Charge les assignations de clusters"""
+    features_pdl = get_features_pdl()
+    return features_pdl[['ID', 'cluster']].drop_duplicates().set_index('ID')
+
 
 import holidays
 

@@ -1,14 +1,18 @@
 import streamlit as st
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
-from src.forecast import load_consumption_data,get_pdl_timeseries,evaluate_and_plot_backtest,forecast_consumption_trend,plot_forecast
+import pandas as pd
+from src.forecast import load_consumption_data,get_pdl_timeseries,evaluate_and_plot_backtest,forecast_consumption_trend,plot_forecast,load_cluster_assignments
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Energy Forecast Dashboard", layout="wide")
 
 # --- CHARGEMENT DES DONNÉES (AVEC CACHE) ---
 @st.cache_data
 def cached_load_data():
-    return load_consumption_data()
+    df_consumption = load_consumption_data()
+    cluster_info = load_cluster_assignments()
+    merged_df = pd.merge(df_consumption,cluster_info, on='ID', how='outer')
+    return merged_df
 
 # --- INTERFACE STREAMLIT ---
 def main():
@@ -24,10 +28,11 @@ def main():
 
     # 2. Barre latérale (Contrôles)
     st.sidebar.header("Configuration")
+    df_unique_pdl = df_conso[["ID","cluster"]].drop_duplicates()
+    options = df_unique_pdl.apply(lambda x: f"{x['ID']} | Cluster: {x['cluster']}", axis=1).tolist()
+    pdl_test_id = st.sidebar.selectbox("Choisir le PDL (ID)", options, index=0)
+    pdl_test_id = int(pdl_test_id.split(" | ")[0])
     
-    pdl_list = df_conso["ID"].unique()
-    pdl_test_id = st.sidebar.selectbox("Choisir le PDL (ID)", pdl_list, index=0)
-
     # 3. Organisation en Onglets
     tab1, tab2, tab3 = st.tabs(["📊 Analyse Historique", "🎯 Backtesting", "🚀 Prédiction Futur"])
 
