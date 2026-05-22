@@ -158,9 +158,6 @@ def eval_classification(y_true, y_pred, model_name="modèle"):
 
     return {"model": model_name, "precision": p, "recall": r, "f1": f1}
 
-
-
-
 # ---------------------------------------------------
 # 6) Fonctions de métriques
 # ---------------------------------------------------

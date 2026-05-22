@@ -10,7 +10,7 @@ from src.forecast import (
     plot_forecast,
     load_cluster_assignments
 )
-from src.generation import plot_cluster_dispersion
+from src.generation import generate_synthetic_curves_with_model
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Energy Forecast Dashboard", layout="wide")
@@ -66,23 +66,26 @@ def main():
         ts_full = get_pdl_timeseries(pdl_test_id, df_conso)
         st.line_chart(ts_full.set_index('date')['daily_kwh'])
         st.write(f"Nombre total de points : {len(ts_full)}")
-        # Filtrage des données pour le cluster sélectionné dans la sidebar
-        df_target_cluster = df_conso[df_conso["cluster"] == cluster_id].copy()
-        if not df_target_cluster.empty:
-            with st.spinner(f"Génération des courbes pour le cluster {cluster_id}..."):
-                # On appelle la fonction de génération
-                # Si plot_cluster_dispersion renvoie un objet Figure Plotly :
-                fig_cluster = plot_cluster_dispersion(df_target_cluster, cluster_id,ts_full)
-                
-                # Affichage selon le type de retour (Plotly ou Matplotlib)
-                if isinstance(fig_cluster, go.Figure):
-                    st.plotly_chart(fig_cluster, use_container_width=True)
-                else:
-                    # Si la fonction fait un plt.show() en interne, on capture le courant
-                    st.pyplot(plt.gcf())
-                    plt.close()
-        else:
-            st.warning("Aucune donnée disponible pour ce cluster.")
+        # Génération synthétique (GAN) - optionnel
+        with st.expander("Générer des courbes synthétiques (GAN)"):
+            synth_type = st.selectbox("Type de résidence", options=["principale", "secondaire"], index=0)
+            synth_count = st.number_input("Nombre de courbes", min_value=1, max_value=50, value=3)
+            synth_days = st.number_input("Jours par courbe", min_value=30, max_value=365, value=365)
+            synth_seed = st.number_input("Seed (0 pour aléatoire)", min_value=0, value=0)
+            if st.button("Générer et afficher"):
+                seed_val = int(synth_seed) if synth_seed != 0 else None
+                with st.spinner("Génération en cours..."):
+                    curves = generate_synthetic_curves_with_model(
+                        residence_type=synth_type,
+                        n_curves=int(synth_count),
+                        n_days=int(synth_days),
+                        seed=seed_val,
+                    )
+                fig = go.Figure()
+                for c in curves:
+                    fig.add_trace(go.Scatter(x=c['timestamps'], y=c['values'], mode='lines', name=f"synth_{c['synthetic_id']}", opacity=0.8))
+                fig.update_layout(title=f"Courbes synthétiques - {synth_type}", xaxis_title='Date', yaxis_title='kWh')
+                st.plotly_chart(fig, use_container_width=True)
 
 
     # --- TAB 2 : BACKTESTING ---
