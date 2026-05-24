@@ -110,16 +110,39 @@ def main():
     # --- TAB 2 : BACKTESTING & PRÉDICTION ---
     with tab2:
         st.subheader("Évaluation de la performance")
-        lookback_window = st.sidebar.slider("Fenêtre d'historique (Lookback)", 3, 365, 14)
         test_days = st.sidebar.slider("Jours de test (Backtest)", 1, 30, 14)
+
+        # Lookback par modèle
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("**Lookback par modèle (jours)**")
+        lookback_lr = st.sidebar.slider("Régression (linéaire)", 7, 365, 30)
+        lookback_sarima = st.sidebar.slider("SARIMA", 30, 365, 90)
+        lookback_lstm = st.sidebar.slider("LSTM", 7, 365, 14)
+
+        # Explication dynamique des modèles selon la configuration choisie
+        model_explanation = f"""
+**Configuration sélectionnée :** Régression={lookback_lr}j, SARIMA={lookback_sarima}j, LSTM={lookback_lstm}j, Backtest={test_days}j.
+
+- **Régression / Modèles linéaires :** rapide et stable, utilise les {lookback_lr} derniers jours pour estimer une tendance linéaire. Adapté aux comportements réguliers.
+- **SARIMA (saisonnalité) :** capture saisonnalité et tendance; nécessite des séries suffisamment longues ({lookback_sarima}j). Instable si lookback < 30.
+- **LSTM (Réseau de Neurones) :** apprend des patterns non-linéaires séquentiels; le temps d'entraînement augmente avec {lookback_lstm}j.
+- **Ensemble :** moyenne/agrégation des prédictions ci‑dessus pour améliorer la robustesse.
+
+Chaque modèle utilise son propre lookback configuré à gauche pour optimiser sa performance.
+"""
+
+        with st.expander("Description des modèles (basée sur la configuration)", expanded=False):
+            st.markdown(model_explanation)
 
         if st.button("Lancer le Backtest"):
             with st.spinner("Entraînement des modèles en cours..."):
                 res_backtest = evaluate_and_plot_backtest(
-                    pdl_test_id, 
-                    df_conso, 
-                    test_days=test_days, 
-                    lookback=lookback_window
+                    pdl_test_id,
+                    df_conso,
+                    test_days=test_days,
+                    lookback_lr=lookback_lr,
+                    lookback_sarima=lookback_sarima,
+                    lookback_lstm=lookback_lstm
                 )
                 # Afficher les métriques retournées par le backtest (MAE et RMSE par modèle)
                 if res_backtest and isinstance(res_backtest, dict) and 'metrics' in res_backtest:
@@ -150,10 +173,12 @@ def main():
         if st.button("Générer les prévisions"):
             with st.spinner("Calcul en cours..."):
                 resultats = forecast_consumption_trend(
-                    pdl_test_id, 
-                    df_conso, 
-                    days_ahead=forecast_days, 
-                    lookback=lookback_window
+                    pdl_test_id,
+                    df_conso,
+                    days_ahead=forecast_days,
+                    lookback_lr=lookback_lr,
+                    lookback_sarima=lookback_sarima,
+                    lookback_lstm=lookback_lstm
                 )
                 
                 if 'error' in resultats:

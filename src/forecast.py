@@ -161,7 +161,8 @@ class LSTMForecaster(nn.Module):
 # ---------------------------------------------------
 import holidays
 
-def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
+def train_and_predict_models(pdl_id, df_consumption, days_ahead=7,
+                             lookback_lr=30, lookback_sarima=90, lookback_lstm=30):
     """
     Entraîne plusieurs modèles et fait des prédictions corrigées
     """
@@ -176,14 +177,26 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
     if len(timeseries) < 365:
         print("Warning: Moins d'un an de données. La tendance annuelle sera estimée sur l'existant.")
     
-    ts_train = timeseries.tail(365).copy()
-    consumption = ts_train['daily_kwh'].values
-    last_date = ts_train['date'].iloc[-1]
+    # Ajouter la colonne trend à TOUT le timeseries (ou à ce qu'on a)
+    ts_for_decomp = timeseries.tail(365).copy() if len(timeseries) >= 365 else timeseries.copy()
+    decomposition = seasonal_decompose(ts_for_decomp['daily_kwh'], model='additive', period=7)
+    trend_values = decomposition.trend.fillna(method='bfill').fillna(method='ffill')
     
-    # Extraction de la tendance
-    decomposition = seasonal_decompose(ts_train['daily_kwh'], model='additive', period=7)
-    ts_train['trend'] = decomposition.trend.fillna(method='bfill').fillna(method='ffill')
-    last_trend = ts_train['trend'].iloc[-1]
+    # Créer une colonne trend pour tout le timeseries
+    # Si on n'a pas 365 jours, utiliser la tendance calculée et remplir le reste
+    if len(timeseries) > len(ts_for_decomp):
+        last_trend_val = trend_values.iloc[-1]
+        # Remplir les jours manquants au début avec la première valeur de la tendance
+        first_trend_val = trend_values.iloc[0]
+        trend_full = [first_trend_val] * (len(timeseries) - len(ts_for_decomp)) + trend_values.tolist()
+        timeseries = timeseries.reset_index(drop=True)
+        timeseries['trend'] = trend_full
+    else:
+        timeseries = timeseries.reset_index(drop=True)
+        timeseries['trend'] = trend_values.values
+    
+    last_date = timeseries['date'].iloc[-1]
+    last_trend = timeseries['trend'].iloc[-1]
     
     # Objet pour les jours fériés français
     fr_holidays = holidays.France()
@@ -191,15 +204,19 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
     results = {
         'pdl_id': pdl_id,
         'last_date': last_date.date(),
-        'lookback': lookback,
+        'lookback_lr': lookback_lr,
+        'lookback_sarima': lookback_sarima,
+        'lookback_lstm': lookback_lstm,
         'data_points': len(timeseries),
         'models': {}
     }
     
     # ===== 1. Régression Linéaire =====
     try:
-        X_lr = ts_train[features_lr]
-        y_lr = ts_train['daily_kwh']
+        # Train linear model on the last `lookback_lr` days (or as many available)
+        ts_lr = timeseries.tail(max(lookback_lr, 30)).copy()
+        X_lr = ts_lr[features_lr]
+        y_lr = ts_lr['daily_kwh']
         model_lr = LinearRegression().fit(X_lr, y_lr)
         
         future_dates = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
@@ -216,13 +233,15 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
         }
     except Exception as e:
         results['models']['linear_regression'] = {'error': str(e)}
-        print({'error': str(e)})
+        print(f'ERREUR Régression Linéaire: {e}')
 
     # ===== 2. SARIMA =====
     if HAS_ARIMA:
         try:
+            # Fit SARIMA on the last `lookback_sarima` points (if available)
+            sarima_series = timeseries['daily_kwh'].dropna().tail(max(lookback_sarima, 30)).values
             model_sarima = SARIMAX(
-                consumption,
+                sarima_series,
                 order=(1, 1, 1),
                 seasonal_order=(1, 0, 0, 7),
                 enforce_stationarity=False,
@@ -239,11 +258,13 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
 
     # ===== 3. LSTM (Séquences Longues) =====
     try:
-        features_df = ts_train[features_lstm].copy()
-        
+        # For LSTM, use the recent window (default 365 days if available)
+        ts_lstm = timeseries.tail(max(365, lookback_lstm + 10)).copy()
+        features_df = ts_lstm[features_lstm].copy()
+
         # SÉCURITÉ : Vérifie si le dataset est plus grand que la taille de la séquence
-        if len(features_df) <= lookback:
-            raise ValueError(f"Historique de {len(features_df)}j trop court pour une séquence de {lookback}j.")
+        if len(features_df) <= lookback_lstm:
+            raise ValueError(f"Historique de {len(features_df)}j trop court pour une séquence de {lookback_lstm}j.")
         
         scaler_X = MinMaxScaler()
         scaled_features = scaler_X.fit_transform(features_df.values)
@@ -254,11 +275,11 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
         # --- CRÉATION DES SÉQUENCES SUR TOUT LE DATASET ---
         X_lstm, y_lstm = [], []
         # La boucle parcourt TOUT le dataset moins la longueur de la fenêtre
-        for i in range(len(scaled_features) - lookback):
+        for i in range(len(scaled_features) - lookback_lstm):
             # X = Les N jours précédents (fenêtre complète)
-            X_lstm.append(scaled_features[i:i+lookback, :])
+            X_lstm.append(scaled_features[i:i+lookback_lstm, :])
             # Y = La consommation du jour SUIVANT la fenêtre
-            y_lstm.append(scaled_features[i+lookback, 0])
+            y_lstm.append(scaled_features[i+lookback_lstm, 0])
             
         # Conversion en tenseurs 3D pour PyTorch (Batch, Sequence, Features)
         X_tensor = torch.tensor(np.array(X_lstm), dtype=torch.float32)
@@ -278,7 +299,7 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
             
         # --- INFÉRENCE (Prédiction du futur) ---
         # On part de la TOUTE DERNIÈRE séquence connue du dataset
-        curr_seq = scaled_features[-lookback:]
+        curr_seq = scaled_features[-lookback_lstm:]
         preds_lstm = []
         
         for i in range(days_ahead):
@@ -315,7 +336,7 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
         }
     except Exception as e:
         results['models']['lstm'] = {'error': f"LSTM: {str(e)}"}
-        print({'error': f"LSTM: {str(e)}"})
+        print(f'ERREUR LSTM: {e}')
 
     # Ensemble Voting
     results['dates'] = [last_date + timedelta(days=i+1) for i in range(days_ahead)]
@@ -331,12 +352,16 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7, lookback=30):
 # ---------------------------------------------------
 # Forecasting avec tendance et saisonnalité (pour compatibilité)
 # ---------------------------------------------------
-def forecast_consumption_trend(pdl_id, df_consumption, days_ahead=7,lookback=30):
+def forecast_consumption_trend(pdl_id, df_consumption, days_ahead=7,
+                               lookback_lr=30, lookback_sarima=90, lookback_lstm=30):
     """
     Prédit la consommation en utilisant les modèles entraînés
     (Wrapper pour compatibilité avec les anciens scripts)
     """
-    result = train_and_predict_models(pdl_id, df_consumption, days_ahead,lookback=lookback)
+    result = train_and_predict_models(
+        pdl_id, df_consumption, days_ahead,
+        lookback_lr=lookback_lr, lookback_sarima=lookback_sarima, lookback_lstm=lookback_lstm
+    )
     
     if 'error' in result:
         return result
@@ -365,7 +390,8 @@ def forecast_consumption_trend(pdl_id, df_consumption, days_ahead=7,lookback=30)
         'all_models_results': result.get('models', {})
     }
 
-def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30):
+def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,
+                               lookback_lr=30, lookback_sarima=90, lookback_lstm=30):
     """
     Sépare les données en Train/Test pour évaluer la cohérence du modèle.
     Masque les 'test_days' derniers jours, prédit dessus, et affiche la comparaison
@@ -383,12 +409,20 @@ def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30)
     ts_test = ts.iloc[-test_days:]
     
     # 3. Créer un DataFrame tronqué pour simuler qu'on est dans le passé
-    df_train_temp = df_consumption[df_consumption.index.isin(ts_train.index)]
+    # Filtrer par PDL ET par dates de train
+    train_dates = ts_train['date'].values
+    df_train_temp = df_consumption[
+        (df_consumption['ID'] == pdl_id) & 
+        (df_consumption['date'].isin(train_dates))
+    ].copy()
     
     print(f"\n⏳ Lancement du Backtest : Entraînement sur les données jusqu'au {ts_train['date'].iloc[-1].strftime('%Y-%m-%d')}...")
     
     # 4. Faire la prédiction (le modèle ne verra pas le Test)
-    resultats_backtest = forecast_consumption_trend(pdl_id, df_train_temp, days_ahead=test_days,lookback=lookback)
+    resultats_backtest = forecast_consumption_trend(
+        pdl_id, df_train_temp, days_ahead=test_days,
+        lookback_lr=lookback_lr, lookback_sarima=lookback_sarima, lookback_lstm=lookback_lstm
+    )
     
     if 'error' in resultats_backtest:
         print("❌ Erreur pendant le backtest:", resultats_backtest['error'])
@@ -412,9 +446,14 @@ def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30)
             nom_modele = model_info.get('model_name', model_key)
             print(f"   - {nom_modele:<20} : MAE={mae_model:.2f} | RMSE={rmse_model:.2f}")
             backtest_metrics[nom_modele] = {'MAE': float(mae_model), 'RMSE': float(rmse_model)}
+        else:
+            # Afficher si le modèle a une erreur
+            if 'error' in model_info:
+                print(f"   - {model_info.get('model_name', model_key):<20} : ERREUR = {model_info['error']}")
         
     # 6. Tracer le graphique de comparaison
-    history = ts_train.tail(lookback+test_days) # Garder 45 jours d'historique pour la lisibilité
+    # Choisir une fenêtre d'historique raisonnable pour l'affichage
+    history = ts_train.tail(max(lookback_lstm, lookback_lr, lookback_sarima) + test_days)
     
     # Création de la figure interactive Plotly
     fig = go.Figure()
