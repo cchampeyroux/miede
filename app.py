@@ -5,10 +5,12 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 import torch
+from torch.utils.data import TensorDataset, DataLoader
 import joblib
 import os
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import confusion_matrix, classification_report, precision_score, recall_score, f1_score
 from src.forecast import (
     load_consumption_data,
@@ -68,11 +70,12 @@ def main():
     cluster_id = int(selection.split("Cluster: ")[1])
     
     # 3. Organisation en Onglets
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Analyse Historique", 
         "🎯 Backtesting", 
         "🚀 Prédiction Futur",
         "🏷️ Analyse Classification",
+        "🧠 Génération"
     ])
 
     # --- TAB 1 : HISTORIQUE ---
@@ -81,8 +84,11 @@ def main():
         ts_full = get_pdl_timeseries(pdl_test_id, df_conso)
         st.line_chart(ts_full.set_index('date')['daily_kwh'])
         st.write(f"Nombre total de points : {len(ts_full)}")
-        # Génération synthétique (GAN) - optionnel
-        with st.expander("Générer des courbes synthétiques (GAN)"):
+
+    # --- TAB 5 : GÉNÉRATION ---
+    with tab5:
+        st.subheader("Génération de courbes synthétiques (GAN)")
+        with st.expander("Générer des courbes synthétiques (GAN)", expanded=True):
             synth_type = st.selectbox("Type de résidence", options=["principale", "secondaire"], index=0)
             synth_count = st.number_input("Nombre de courbes", min_value=1, max_value=50, value=3)
             synth_days = st.number_input("Jours par courbe", min_value=30, max_value=365, value=365)
@@ -101,7 +107,6 @@ def main():
                     fig.add_trace(go.Scatter(x=c['timestamps'], y=c['values'], mode='lines', name=f"synth_{c['synthetic_id']}", opacity=0.8))
                 fig.update_layout(title=f"Courbes synthétiques - {synth_type}", xaxis_title='Date', yaxis_title='kWh')
                 st.plotly_chart(fig, use_container_width=True)
-
 
     # --- TAB 2 : BACKTESTING ---
     with tab2:
@@ -194,57 +199,121 @@ def main():
                 X_test_imputed = imputer.transform(X_test)
                 X_test_scaled = scaler.transform(X_test_imputed)
                 
-                # Charger les modèles sauvegardés
+                # Paramètres de la régression logistique contrôlables
+                st.markdown("#### Paramètres Régression Logistique")
+                col_param1, col_param2, col_param3 = st.columns(3)
+                with col_param1:
+                    penalty = st.selectbox("Pénalité", options=["l2", "l1", "none"], index=0)
+                    C = st.number_input("Inverse de régularisation C", min_value=0.01, max_value=100.0, value=1.0, step=0.01, format="%.2f")
+                with col_param2:
+                    solver = st.selectbox("Solver", options=["liblinear", "lbfgs", "saga"], index=0)
+                    max_iter = st.number_input("Max itérations", min_value=100, max_value=5000, value=2000, step=100)
+                with col_param3:
+                    threshold = st.slider("Seuil de décision", min_value=0.0, max_value=1.0, value=0.50, step=0.01)
+                    class_weight = st.selectbox("Pondération des classes", options=["balanced", "None"], index=0)
+
+                # Forcer les combinaisons de solver compatibles
+                if penalty == "l1" and solver == "lbfgs":
+                    solver = "liblinear"
+                if penalty == "none" and solver == "liblinear":
+                    solver = "lbfgs"
+                if penalty == "none" and solver == "saga":
+                    solver = "lbfgs"
+
+                # Charger les modèles sauvegardés pour NN seulement
                 models_dir = os.path.join(os.path.dirname(__file__), "models")
-                
-                logreg_model = joblib.load(os.path.join(models_dir, "logistic_regression_model.pkl"))
                 nn_model_path = os.path.join(models_dir, "neural_network_model.pth")
                 model_config_path = os.path.join(models_dir, "model_config.pkl")
                 
-                # Charger NN
+                # Charger NN par défaut
                 config = joblib.load(model_config_path)
                 nn_model = SimpleNN(config['input_size'])
                 nn_model.load_state_dict(torch.load(nn_model_path, map_location=torch.device('cpu')))
                 nn_model.eval()
-                
+                y_score_nn = None
+                y_pred_nn = None
+
+                # Afficher la loss function du réseau de neurones
+                if st.button("Afficher la loss du réseau de neurones"):
+                    X_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
+                    y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1)
+                    X_val_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
+                    y_val_tensor = torch.tensor(y_test.values, dtype=torch.float32).unsqueeze(1)
+
+                    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+                    val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+                    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+                    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+                    model_nn = SimpleNN(config['input_size'])
+                    criterion = torch.nn.BCELoss()
+                    optimizer = torch.optim.Adam(model_nn.parameters(), lr=1e-3)
+
+                    train_losses = []
+                    val_losses = []
+                    epochs = 30
+                    for epoch in range(epochs):
+                        model_nn.train()
+                        epoch_loss = 0.0
+                        for X_batch, y_batch in train_loader:
+                            optimizer.zero_grad()
+                            outputs = model_nn(X_batch)
+                            loss = criterion(outputs, y_batch)
+                            loss.backward()
+                            optimizer.step()
+                            epoch_loss += loss.item() * X_batch.size(0)
+                        train_losses.append(epoch_loss / len(train_dataset))
+
+                        model_nn.eval()
+                        val_loss = 0.0
+                        with torch.no_grad():
+                            for X_batch, y_batch in val_loader:
+                                outputs = model_nn(X_batch)
+                                loss = criterion(outputs, y_batch)
+                                val_loss += loss.item() * X_batch.size(0)
+                        val_losses.append(val_loss / len(val_dataset))
+
+                    with st.expander("Courbe de loss - Réseau de Neurones", expanded=True):
+                        fig_loss, ax_loss = plt.subplots(figsize=(8, 5))
+                        ax_loss.plot(list(range(1, epochs + 1)), train_losses, label='Loss apprentissage')
+                        ax_loss.plot(list(range(1, epochs + 1)), val_losses, label='Loss validation')
+                        ax_loss.set_xlabel('Epoch')
+                        ax_loss.set_ylabel('Loss')
+                        ax_loss.set_title('Courbe de loss - Réseau de Neurones')
+                        ax_loss.legend()
+                        ax_loss.grid(True, linestyle='--', alpha=0.5)
+                        st.pyplot(fig_loss)
+                        plt.close(fig_loss)
+
+                    y_score_nn = model_nn(X_val_tensor).detach().numpy().squeeze()
+                    y_pred_nn = (y_score_nn >= 0.5).astype(int)
+
+                # Prédictions par défaut du réseau de neurones pré-entraîné
+                if y_pred_nn is None:
+                    X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
+                    with torch.no_grad():
+                        y_score_nn = nn_model(X_test_tensor).squeeze().numpy()
+                    y_pred_nn = (y_score_nn >= 0.5).astype(int)
+
+                # Entraîner la régression logistique sur les données prétraitées
+                lr_model = LogisticRegression(
+                    random_state=42,
+                    penalty=penalty if penalty != "none" else None,
+                    C=float(C),
+                    solver=solver,
+                    max_iter=int(max_iter),
+                    class_weight=None if class_weight == "None" else class_weight,
+                    l1_ratio=0.0 if penalty != "elasticnet" else 0.5,
+                )
+                lr_model.fit(X_train_scaled, y_train)
+
                 # Prédictions - Régression Logistique
-                y_pred_lr = logreg_model.predict(X_test)
-                y_score_lr = logreg_model.predict_proba(X_test)[:, 1]
-                
-                # Prédictions - Réseau de Neurones
-                X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
-                with torch.no_grad():
-                    y_score_nn = nn_model(X_test_tensor).squeeze().numpy()
-                y_pred_nn = (y_score_nn >= 0.5).astype(int)
+                y_score_lr = lr_model.predict_proba(X_test_scaled)[:, 1]
+                y_pred_lr = (y_score_lr >= float(threshold)).astype(int)
                 
         except Exception as e:
             st.error(f"Erreur lors du chargement des modèles : {e}")
             st.stop()
-        
-        # === SECTION 1 : MATRICE DE CORRÉLATION ===
-        st.markdown("### 1️⃣ Matrice de Corrélation - Features d'Entraînement")
-        
-        with st.expander("Afficher la matrice de corrélation", expanded=True):
-            # Calculer la corrélation
-            corr_matrix = X_train.drop(columns=['ID'] if 'ID' in X_train.columns else []).corr()
-            
-            # Visualisation avec Seaborn
-            fig, ax = plt.subplots(figsize=(14, 10))
-            sns.heatmap(
-                corr_matrix,
-                annot=True,
-                fmt='.2f',
-                cmap='coolwarm',
-                center=0,
-                square=True,
-                linewidths=0.5,
-                cbar_kws={"shrink": 0.8},
-                ax=ax
-            )
-            plt.title('Matrice de Corrélation - Features de Classification', fontsize=14, fontweight='bold')
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
         
         # === SECTION 2 : MATRICES DE CONFUSION ===
         st.markdown("### 2️⃣ Matrices de Confusion - Comparaison des Modèles")
