@@ -70,10 +70,9 @@ def main():
     cluster_id = int(selection.split("Cluster: ")[1])
     
     # 3. Organisation en Onglets
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Analyse Historique", 
-        "🎯 Backtesting", 
-        "🚀 Prédiction Futur",
+        "🎯 Backtesting & Prédiction",
         "🏷️ Analyse Classification",
         "🧠 Génération"
     ])
@@ -85,8 +84,8 @@ def main():
         st.line_chart(ts_full.set_index('date')['daily_kwh'])
         st.write(f"Nombre total de points : {len(ts_full)}")
 
-    # --- TAB 5 : GÉNÉRATION ---
-    with tab5:
+    # --- TAB 4 : GÉNÉRATION ---
+    with tab4:
         st.subheader("Génération de courbes synthétiques (GAN)")
         with st.expander("Générer des courbes synthétiques (GAN)", expanded=True):
             synth_type = st.selectbox("Type de résidence", options=["principale", "secondaire"], index=0)
@@ -108,7 +107,7 @@ def main():
                 fig.update_layout(title=f"Courbes synthétiques - {synth_type}", xaxis_title='Date', yaxis_title='kWh')
                 st.plotly_chart(fig, use_container_width=True)
 
-    # --- TAB 2 : BACKTESTING ---
+    # --- TAB 2 : BACKTESTING & PRÉDICTION ---
     with tab2:
         st.subheader("Évaluation de la performance")
         lookback_window = st.sidebar.slider("Fenêtre d'historique (Lookback)", 3, 365, 14)
@@ -116,17 +115,35 @@ def main():
 
         if st.button("Lancer le Backtest"):
             with st.spinner("Entraînement des modèles en cours..."):
-                evaluate_and_plot_backtest(
+                res_backtest = evaluate_and_plot_backtest(
                     pdl_test_id, 
                     df_conso, 
                     test_days=test_days, 
                     lookback=lookback_window
                 )
-                st.pyplot(plt.gcf())
-                plt.clf()
+                # Afficher les métriques retournées par le backtest (MAE et RMSE par modèle)
+                if res_backtest and isinstance(res_backtest, dict) and 'metrics' in res_backtest:
+                    metrics = res_backtest['metrics']
+                    try:
+                        rows = []
+                        for name, vals in metrics.items():
+                            if isinstance(vals, dict):
+                                mae = vals.get('MAE')
+                                rmse = vals.get('RMSE')
+                            else:
+                                mae = vals
+                                rmse = None
+                            rows.append({'Model': name, 'MAE': mae, 'RMSE': rmse})
+                        df_metrics = pd.DataFrame(rows)
+                        df_metrics['MAE'] = df_metrics['MAE'].astype(float)
+                        if 'RMSE' in df_metrics.columns:
+                            df_metrics['RMSE'] = df_metrics['RMSE'].astype(float)
+                        st.markdown('### 📋 Métriques Backtest')
+                        st.dataframe(df_metrics.style.format({'MAE': '{:.2f}', 'RMSE': '{:.2f}'}), use_container_width=True)
+                    except Exception:
+                        st.write(metrics)
 
-    # --- TAB 3 : PRÉDICTION ---
-    with tab3:
+        st.markdown("---")
         st.subheader("Prévisions du futur réel")
         forecast_days = st.number_input("Jours à prédire (Futur)", 1, 30, 7)
 
@@ -157,8 +174,8 @@ def main():
                     st.pyplot(fig_forecast)
                     plt.close()
 
-    # --- TAB 4 : ANALYSE CLASSIFICATION ---
-    with tab4:
+    # --- TAB 3 : ANALYSE CLASSIFICATION ---
+    with tab3:
         st.subheader("🏷️ Analyse des Modèles de Classification")
         st.markdown("Comparaison des performances: Régression Logistique vs Réseau de Neurones")
         
@@ -199,26 +216,11 @@ def main():
                 X_test_imputed = imputer.transform(X_test)
                 X_test_scaled = scaler.transform(X_test_imputed)
                 
-                # Paramètres de la régression logistique contrôlables
+                # Paramètre visible pour la régression logistique : seul le seuil de décision
                 st.markdown("#### Paramètres Régression Logistique")
-                col_param1, col_param2, col_param3 = st.columns(3)
-                with col_param1:
-                    penalty = st.selectbox("Pénalité", options=["l2", "l1", "none"], index=0)
-                    C = st.number_input("Inverse de régularisation C", min_value=0.01, max_value=100.0, value=1.0, step=0.01, format="%.2f")
-                with col_param2:
-                    solver = st.selectbox("Solver", options=["liblinear", "lbfgs", "saga"], index=0)
-                    max_iter = st.number_input("Max itérations", min_value=100, max_value=5000, value=2000, step=100)
-                with col_param3:
-                    threshold = st.slider("Seuil de décision", min_value=0.0, max_value=1.0, value=0.50, step=0.01)
-                    class_weight = st.selectbox("Pondération des classes", options=["balanced", "None"], index=0)
+                threshold = st.slider("Seuil de validation", min_value=0.0, max_value=1.0, value=0.50, step=0.01)
 
-                # Forcer les combinaisons de solver compatibles
-                if penalty == "l1" and solver == "lbfgs":
-                    solver = "liblinear"
-                if penalty == "none" and solver == "liblinear":
-                    solver = "lbfgs"
-                if penalty == "none" and solver == "saga":
-                    solver = "lbfgs"
+                # (Cross-validation 5-fold removed — UI keeps only threshold)
 
                 # Charger les modèles sauvegardés pour NN seulement
                 models_dir = os.path.join(os.path.dirname(__file__), "models")
@@ -252,6 +254,14 @@ def main():
                     train_losses = []
                     val_losses = []
                     epochs = 30
+                    # Early stopping parameters
+                    patience = 3
+                    best_val_loss = float('inf')
+                    best_epoch = 0
+                    counter = 0
+                    stopped_epoch = None
+                    best_model_state = None
+
                     for epoch in range(epochs):
                         model_nn.train()
                         epoch_loss = 0.0
@@ -271,12 +281,29 @@ def main():
                                 outputs = model_nn(X_batch)
                                 loss = criterion(outputs, y_batch)
                                 val_loss += loss.item() * X_batch.size(0)
-                        val_losses.append(val_loss / len(val_dataset))
+                        val_loss = val_loss / len(val_dataset)
+                        val_losses.append(val_loss)
 
+                        # Early stopping check
+                        if val_loss < best_val_loss:
+                            best_val_loss = val_loss
+                            best_epoch = epoch + 1
+                            best_model_state = model_nn.state_dict().copy()
+                            counter = 0
+                        else:
+                            counter += 1
+                            if counter >= patience:
+                                stopped_epoch = epoch + 1
+                                break
+                    # Charger le meilleur modèle trouvé si disponible
+                    if best_model_state is not None:
+                        model_nn.load_state_dict(best_model_state)
+
+                    n_epochs_done = len(train_losses)
                     with st.expander("Courbe de loss - Réseau de Neurones", expanded=True):
                         fig_loss, ax_loss = plt.subplots(figsize=(8, 5))
-                        ax_loss.plot(list(range(1, epochs + 1)), train_losses, label='Loss apprentissage')
-                        ax_loss.plot(list(range(1, epochs + 1)), val_losses, label='Loss validation')
+                        ax_loss.plot(list(range(1, n_epochs_done + 1)), train_losses, label='Loss apprentissage')
+                        ax_loss.plot(list(range(1, n_epochs_done + 1)), val_losses, label='Loss test')
                         ax_loss.set_xlabel('Epoch')
                         ax_loss.set_ylabel('Loss')
                         ax_loss.set_title('Courbe de loss - Réseau de Neurones')
@@ -284,6 +311,11 @@ def main():
                         ax_loss.grid(True, linestyle='--', alpha=0.5)
                         st.pyplot(fig_loss)
                         plt.close(fig_loss)
+                    # Afficher info early stopping
+                    if stopped_epoch is not None:
+                        st.success(f"Early stopping déclenché à l'époque {stopped_epoch} (meilleur modèle à l'époque {best_epoch})")
+                    else:
+                        st.info(f"Entraînement terminé sur {n_epochs_done} époques (meilleur modèle à l'époque {best_epoch})")
 
                     y_score_nn = model_nn(X_val_tensor).detach().numpy().squeeze()
                     y_pred_nn = (y_score_nn >= 0.5).astype(int)
@@ -295,15 +327,14 @@ def main():
                         y_score_nn = nn_model(X_test_tensor).squeeze().numpy()
                     y_pred_nn = (y_score_nn >= 0.5).astype(int)
 
-                # Entraîner la régression logistique sur les données prétraitées
+                # Entraîner la régression logistique sur les données prétraitées (hyperparamètres fixes)
                 lr_model = LogisticRegression(
                     random_state=42,
-                    penalty=penalty if penalty != "none" else None,
-                    C=float(C),
-                    solver=solver,
-                    max_iter=int(max_iter),
-                    class_weight=None if class_weight == "None" else class_weight,
-                    l1_ratio=0.0 if penalty != "elasticnet" else 0.5,
+                    penalty='l2',
+                    C=1.0,
+                    solver='liblinear',
+                    max_iter=2000,
+                    class_weight='balanced'
                 )
                 lr_model.fit(X_train_scaled, y_train)
 

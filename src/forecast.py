@@ -398,16 +398,20 @@ def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30)
     predictions_ensemble = resultats_backtest['predictions']
     realite = ts_test['daily_kwh'].values
     
-    print("\n📊 RÉSULTATS DU BACKTEST (Erreur Absolue Moyenne - plus c'est bas, mieux c'est) :")
+    print("\n📊 RÉSULTATS DU BACKTEST (erreurs: MAE et RMSE — plus c'est bas, mieux c'est) :")
     mae_ensemble = mean_absolute_error(realite, predictions_ensemble)
-    print(f"   🎯 Ensemble (Moyenne)  : {mae_ensemble:.2f} kWh/jour")
-    
+    rmse_ensemble = np.sqrt(mean_squared_error(realite, predictions_ensemble))
+    print(f"   🎯 Ensemble (Moyenne)  : MAE={mae_ensemble:.2f} kWh/jour | RMSE={rmse_ensemble:.2f}")
+
     all_models = resultats_backtest.get('all_models_results', {})
+    backtest_metrics = { 'Ensemble': {'MAE': float(mae_ensemble), 'RMSE': float(rmse_ensemble)} }
     for model_key, model_info in all_models.items():
         if 'predictions' in model_info:
             mae_model = mean_absolute_error(realite, model_info['predictions'])
+            rmse_model = np.sqrt(mean_squared_error(realite, model_info['predictions']))
             nom_modele = model_info.get('model_name', model_key)
-            print(f"   - {nom_modele:<20} : {mae_model:.2f} kWh/jour")
+            print(f"   - {nom_modele:<20} : MAE={mae_model:.2f} | RMSE={rmse_model:.2f}")
+            backtest_metrics[nom_modele] = {'MAE': float(mae_model), 'RMSE': float(rmse_model)}
         
     # 6. Tracer le graphique de comparaison
     history = ts_train.tail(lookback+test_days) # Garder 45 jours d'historique pour la lisibilité
@@ -497,6 +501,11 @@ def evaluate_and_plot_backtest(pdl_id, df_consumption, test_days=14,lookback=30)
 
     # 6. Affichage dans Streamlit
     st.plotly_chart(fig, use_container_width=True)
+    # Retourner les métriques calculées pour affichage dans l'UI
+    try:
+        return {'metrics': backtest_metrics}
+    except Exception:
+        return {'metrics': {}}
 
 
 def plot_forecast(pdl_id, df_consumption, dates, ensemble_preds=None, all_models_dict=None, days_history=60):
