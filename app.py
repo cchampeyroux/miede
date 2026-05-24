@@ -1,7 +1,15 @@
 import streamlit as st
 import matplotlib.pyplot as plt
+import seaborn as sns
 import plotly.graph_objects as go
 import pandas as pd
+import numpy as np
+import torch
+import joblib
+import os
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import confusion_matrix, classification_report, precision_score, recall_score, f1_score
 from src.forecast import (
     load_consumption_data,
     get_pdl_timeseries,
@@ -11,6 +19,12 @@ from src.forecast import (
     load_cluster_assignments
 )
 from src.generation import generate_synthetic_curves_with_model
+from src.clustering import get_features_pdl
+from src.classification import (
+    load_labels,
+    feature_cols,
+    SimpleNN
+)
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Energy Forecast Dashboard", layout="wide")
@@ -54,10 +68,11 @@ def main():
     cluster_id = int(selection.split("Cluster: ")[1])
     
     # 3. Organisation en Onglets
-    tab1, tab2, tab3= st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Analyse Historique", 
         "🎯 Backtesting", 
         "🚀 Prédiction Futur",
+        "🏷️ Analyse Classification",
     ])
 
     # --- TAB 1 : HISTORIQUE ---
@@ -136,6 +151,286 @@ def main():
                     )
                     st.pyplot(fig_forecast)
                     plt.close()
+
+    # --- TAB 4 : ANALYSE CLASSIFICATION ---
+    with tab4:
+        st.subheader("🏷️ Analyse des Modèles de Classification")
+        st.markdown("Comparaison des performances: Régression Logistique vs Réseau de Neurones")
+        
+        # Charger les données et modèles
+        try:
+            with st.spinner("Chargement des modèles et données..."):
+                # Charger les features et labels
+                features_pdl = get_features_pdl()
+                labels = load_labels()
+                
+                # Fusion
+                df_model = features_pdl.merge(
+                    labels[["id", "label"]],
+                    left_on="ID",
+                    right_on="id",
+                    how="inner"
+                ).copy()
+                
+                X = df_model[feature_cols].replace([np.inf, -np.inf], np.nan)
+                y = df_model["label"].astype(int).copy()
+                
+                # Split train/test (même config que classification.py)
+                from sklearn.model_selection import train_test_split
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y,
+                    test_size=0.20,
+                    random_state=42,
+                    stratify=y
+                )
+                
+                # Prétraitement
+                imputer = SimpleImputer(strategy="median")
+                scaler = StandardScaler()
+                
+                X_train_imputed = imputer.fit_transform(X_train)
+                X_train_scaled = scaler.fit_transform(X_train_imputed)
+                
+                X_test_imputed = imputer.transform(X_test)
+                X_test_scaled = scaler.transform(X_test_imputed)
+                
+                # Charger les modèles sauvegardés
+                models_dir = os.path.join(os.path.dirname(__file__), "models")
+                
+                logreg_model = joblib.load(os.path.join(models_dir, "logistic_regression_model.pkl"))
+                nn_model_path = os.path.join(models_dir, "neural_network_model.pth")
+                model_config_path = os.path.join(models_dir, "model_config.pkl")
+                
+                # Charger NN
+                config = joblib.load(model_config_path)
+                nn_model = SimpleNN(config['input_size'])
+                nn_model.load_state_dict(torch.load(nn_model_path, map_location=torch.device('cpu')))
+                nn_model.eval()
+                
+                # Prédictions - Régression Logistique
+                y_pred_lr = logreg_model.predict(X_test)
+                y_score_lr = logreg_model.predict_proba(X_test)[:, 1]
+                
+                # Prédictions - Réseau de Neurones
+                X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
+                with torch.no_grad():
+                    y_score_nn = nn_model(X_test_tensor).squeeze().numpy()
+                y_pred_nn = (y_score_nn >= 0.5).astype(int)
+                
+        except Exception as e:
+            st.error(f"Erreur lors du chargement des modèles : {e}")
+            st.stop()
+        
+        # === SECTION 1 : MATRICE DE CORRÉLATION ===
+        st.markdown("### 1️⃣ Matrice de Corrélation - Features d'Entraînement")
+        
+        with st.expander("Afficher la matrice de corrélation", expanded=True):
+            # Calculer la corrélation
+            corr_matrix = X_train.drop(columns=['ID'] if 'ID' in X_train.columns else []).corr()
+            
+            # Visualisation avec Seaborn
+            fig, ax = plt.subplots(figsize=(14, 10))
+            sns.heatmap(
+                corr_matrix,
+                annot=True,
+                fmt='.2f',
+                cmap='coolwarm',
+                center=0,
+                square=True,
+                linewidths=0.5,
+                cbar_kws={"shrink": 0.8},
+                ax=ax
+            )
+            plt.title('Matrice de Corrélation - Features de Classification', fontsize=14, fontweight='bold')
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close()
+        
+        # === SECTION 2 : MATRICES DE CONFUSION ===
+        st.markdown("### 2️⃣ Matrices de Confusion - Comparaison des Modèles")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Régression Logistique")
+            cm_lr = confusion_matrix(y_test, y_pred_lr)
+            
+            fig_cm_lr, ax_lr = plt.subplots(figsize=(8, 6))
+            sns.heatmap(
+                cm_lr,
+                annot=True,
+                fmt='d',
+                cmap='Blues',
+                cbar=True,
+                square=True,
+                xticklabels=['Principale', 'Secondaire'],
+                yticklabels=['Principale', 'Secondaire'],
+                ax=ax_lr,
+                annot_kws={'size': 14, 'weight': 'bold'}
+            )
+            ax_lr.set_xlabel('Prédiction', fontsize=12, fontweight='bold')
+            ax_lr.set_ylabel('Réalité', fontsize=12, fontweight='bold')
+            ax_lr.set_title('Matrice de Confusion\nRégression Logistique', fontsize=12, fontweight='bold')
+            st.pyplot(fig_cm_lr)
+            plt.close()
+        
+        with col2:
+            st.markdown("#### Réseau de Neurones")
+            cm_nn = confusion_matrix(y_test, y_pred_nn)
+            
+            fig_cm_nn, ax_nn = plt.subplots(figsize=(8, 6))
+            sns.heatmap(
+                cm_nn,
+                annot=True,
+                fmt='d',
+                cmap='Greens',
+                cbar=True,
+                square=True,
+                xticklabels=['Principale', 'Secondaire'],
+                yticklabels=['Principale', 'Secondaire'],
+                ax=ax_nn,
+                annot_kws={'size': 14, 'weight': 'bold'}
+            )
+            ax_nn.set_xlabel('Prédiction', fontsize=12, fontweight='bold')
+            ax_nn.set_ylabel('Réalité', fontsize=12, fontweight='bold')
+            ax_nn.set_title('Matrice de Confusion\nRéseau de Neurones', fontsize=12, fontweight='bold')
+            st.pyplot(fig_cm_nn)
+            plt.close()
+        
+        # === SECTION 3 : MÉTRIQUES D'ÉVALUATION ===
+        st.markdown("### 3️⃣ Métriques d'Évaluation - Comparaison Détaillée")
+        
+        # Calculer les métriques
+        metrics_lr = {
+            'Precision': precision_score(y_test, y_pred_lr, zero_division=0),
+            'Recall': recall_score(y_test, y_pred_lr, zero_division=0),
+            'F1-Score': f1_score(y_test, y_pred_lr, zero_division=0),
+        }
+        
+        metrics_nn = {
+            'Precision': precision_score(y_test, y_pred_nn, zero_division=0),
+            'Recall': recall_score(y_test, y_pred_nn, zero_division=0),
+            'F1-Score': f1_score(y_test, y_pred_nn, zero_division=0),
+        }
+        
+        # Afficher les métriques sous forme de tableau
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("#### 📊 Precision")
+            st.metric(
+                "Régression Logistique",
+                f"{metrics_lr['Precision']:.4f}",
+                delta=f"{(metrics_lr['Precision'] - metrics_nn['Precision']):.4f}",
+                delta_color="inverse"
+            )
+            st.metric(
+                "Réseau de Neurones",
+                f"{metrics_nn['Precision']:.4f}"
+            )
+        
+        with col2:
+            st.markdown("#### 🎯 Recall")
+            st.metric(
+                "Régression Logistique",
+                f"{metrics_lr['Recall']:.4f}",
+                delta=f"{(metrics_lr['Recall'] - metrics_nn['Recall']):.4f}",
+                delta_color="inverse"
+            )
+            st.metric(
+                "Réseau de Neurones",
+                f"{metrics_nn['Recall']:.4f}"
+            )
+        
+        with col3:
+            st.markdown("#### ⚖️ F1-Score")
+            st.metric(
+                "Régression Logistique",
+                f"{metrics_lr['F1-Score']:.4f}",
+                delta=f"{(metrics_lr['F1-Score'] - metrics_nn['F1-Score']):.4f}",
+                delta_color="inverse"
+            )
+            st.metric(
+                "Réseau de Neurones",
+                f"{metrics_nn['F1-Score']:.4f}"
+            )
+        
+        # Tableau comparatif détaillé
+        st.markdown("---")
+        st.markdown("#### 📈 Tableau Comparatif Complet")
+        
+        comparison_data = {
+            'Métrique': ['Precision', 'Recall', 'F1-Score'],
+            'Régression Logistique': [
+                f"{metrics_lr['Precision']:.4f}",
+                f"{metrics_lr['Recall']:.4f}",
+                f"{metrics_lr['F1-Score']:.4f}",
+            ],
+            'Réseau de Neurones': [
+                f"{metrics_nn['Precision']:.4f}",
+                f"{metrics_nn['Recall']:.4f}",
+                f"{metrics_nn['F1-Score']:.4f}",
+            ],
+            'Différence (NN - LR)': [
+                f"{(metrics_nn['Precision'] - metrics_lr['Precision']):+.4f}",
+                f"{(metrics_nn['Recall'] - metrics_lr['Recall']):+.4f}",
+                f"{(metrics_nn['F1-Score'] - metrics_lr['F1-Score']):+.4f}",
+            ]
+        }
+        
+        df_comparison = pd.DataFrame(comparison_data)
+        st.dataframe(df_comparison, use_container_width=True)
+        
+        # === SECTION 4 : INSIGHTS ===
+        st.markdown("---")
+        st.markdown("### 💡 Insights & Recommandations")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Régression Logistique")
+            with st.container(border=True):
+                st.markdown(f"""
+                ✅ **Avantages:**
+                - Modèle simple et interprétable
+                - Entraînement rapide
+                - Précision: {metrics_lr['Precision']:.1%}
+                - Recall: {metrics_lr['Recall']:.1%}
+                - F1-Score: {metrics_lr['F1-Score']:.4f}
+                
+                ⚠️ **Limitations:**
+                - Peut être suboptimale pour patterns non-linéaires
+                - Performance: {metrics_lr['F1-Score']:.1%}
+                """)
+        
+        with col2:
+            st.markdown("#### Réseau de Neurones")
+            with st.container(border=True):
+                st.markdown(f"""
+                ✅ **Avantages:**
+                - Capture patterns complexes
+                - Plus flexible
+                - Précision: {metrics_nn['Precision']:.1%}
+                - Recall: {metrics_nn['Recall']:.1%}
+                - F1-Score: {metrics_nn['F1-Score']:.4f}
+                
+                ⚠️ **Limitations:**
+                - Moins interprétable ("boîte noire")
+                - Entraînement plus lent
+                - Performance: {metrics_nn['F1-Score']:.1%}
+                """)
+        
+        # Recommandation finale
+        st.markdown("---")
+        meilleur_modele = "Réseau de Neurones" if metrics_nn['F1-Score'] > metrics_lr['F1-Score'] else "Régression Logistique"
+        diff_f1 = abs(metrics_nn['F1-Score'] - metrics_lr['F1-Score'])
+        
+        if diff_f1 > 0.05:
+            st.success(f"🏆 **{meilleur_modele}** est significativement meilleur (F1 difference: {diff_f1:.4f})", icon="✨")
+        else:
+            st.info(f"⚖️ Les deux modèles ont des performances comparables (F1 difference: {diff_f1:.4f})", icon="⚖️")
+            st.markdown("**Recommandation:** Utiliser la **Régression Logistique** en production (plus rapide et interprétable)")
+
 
 if __name__ == "__main__":
     main()
