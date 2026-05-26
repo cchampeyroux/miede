@@ -43,6 +43,11 @@ pip freeze > requirements.txt && git add && git commit && git push
 
 ## Architecture du Projet
 
+Pour lancer le dashboard : 
+```python
+streamlit run .\app.py
+```
+
 ### Structure `src/`
 
 Le projet est organisé en modules spécialisés pour différentes tâches:

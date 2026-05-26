@@ -46,7 +46,6 @@ def cached_load_data():
 # --- INTERFACE STREAMLIT ---
 def main():
     st.title("⚡ Dashboard de Forecasting Énergétique")
-    st.markdown("Analyse et prédiction multimodèle (LR, SARIMA, LSTM)")
 
     # 1. Chargement des données
     try:
