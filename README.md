@@ -196,41 +196,6 @@ display_model_results(result_dict)  # Affiche résultats détaillés
 
 ---
 
-## Pipeline Typique
-
-### 1. **Préparation des données**
-```python
-from src.clustering import get_features_pdl
-features = get_features_pdl()  # Crée/charge les features et clusters
-```
-
-### 2. **Classification** (prédire principale/secondaire)
-```python
-from src.classification import eval_classification
-# ... Entraîner modèle, puis évaluer
-eval_classification(y_test, predictions, "Mon Modèle")
-```
-
-### 3. **Prédiction de consommation**
-```python
-from src.forecast import train_and_predict_models
-result = train_and_predict_models(pdl_id=12345)
-print(result['ensemble']['predictions'])  # Prédictions des 7 prochains jours
-```
-
-### 4. **Génération synthétique**
-```python
-from src.generation import generate_synthetic_curves_with_model
-curves = generate_synthetic_curves_with_model(
-    residence_type="principale",
-    n_curves=10,
-    n_days=365,
-    seed=42
-)
-```
-
----
-
 ## Fichiers de Données
 
 - `data/RES2-6-9.csv` - Données de consommation demi-horaire (30 min)
