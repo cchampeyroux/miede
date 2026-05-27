@@ -35,9 +35,15 @@ if project_root not in sys.path:
 try:
     from statsmodels.tsa.arima.model import ARIMA
     HAS_ARIMA = True
-    print(HAS_ARIMA)
-except:
+except Exception:
     HAS_ARIMA = False
+
+# Essayer d'importer auto_arima pour la sélection automatique des paramètres SARIMA
+try:
+    from pmdarima import auto_arima
+    HAS_AUTO_ARIMA = True
+except Exception:
+    HAS_AUTO_ARIMA = False
 
 # ---------------------------------------------------
 # Chargement et préparation des données de consommation
@@ -159,7 +165,6 @@ class LSTMForecaster(nn.Module):
 # ---------------------------------------------------
 # Entraînement des modèles de forecasting
 # ---------------------------------------------------
-import holidays
 
 def train_and_predict_models(pdl_id, df_consumption, days_ahead=7,
                              lookback_lr=30, lookback_sarima=90, lookback_lstm=30):
@@ -235,10 +240,34 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7,
         results['models']['linear_regression'] = {'error': str(e)}
         print(f'ERREUR Régression Linéaire: {e}')
 
-    # ===== 2. SARIMA =====
-    if HAS_ARIMA:
+    # ===== 2. Auto-ARIMA / SARIMA =====
+    if HAS_AUTO_ARIMA:
         try:
-            # Fit SARIMA on the last `lookback_sarima` points (if available)
+            sarima_series = timeseries['daily_kwh'].dropna().tail(max(lookback_sarima, 30)).values
+            model_auto = auto_arima(
+                sarima_series,
+                start_p=0, start_q=0,
+                max_p=4, max_q=4,
+                m=7,
+                seasonal=True,
+                d=None,
+                D=1,
+                start_P=0, start_Q=0,
+                max_P=2, max_Q=2,
+                trace=False,
+                error_action='ignore',
+                suppress_warnings=True,
+                stepwise=True,
+            )
+            forecast_values = model_auto.predict(n_periods=days_ahead)
+            results['models']['arima'] = {
+                'predictions': np.maximum(0, forecast_values).tolist(),
+                'model_name': 'Auto-ARIMA'
+            }
+        except Exception as e:
+            results['models']['arima'] = {'error': str(e)}
+    elif HAS_ARIMA:
+        try:
             sarima_series = timeseries['daily_kwh'].dropna().tail(max(lookback_sarima, 30)).values
             model_sarima = SARIMAX(
                 sarima_series,
@@ -255,6 +284,10 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7,
             }
         except Exception as e:
             results['models']['arima'] = {'error': str(e)}
+    else:
+        results['models']['arima'] = {
+            'error': 'pmdarima not installed: auto_arima unavailable'
+        }
 
     # ===== 3. LSTM (Séquences Longues) =====
     try:
