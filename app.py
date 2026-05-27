@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 import joblib
 import os
+import time
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -20,7 +21,7 @@ from src.forecast import (
     plot_forecast,
     load_cluster_assignments
 )
-from src.generation import generate_synthetic_curves_with_model
+from src.generation import generate_synthetic_curves_with_model, compute_r2_similarity
 from src.clustering import get_features_pdl
 from src.classification import (
     load_labels,
@@ -42,6 +43,33 @@ def cached_load_data():
     
     merged_df = pd.merge(df_consumption, cluster_info, on='ID', how='outer')
     return merged_df
+
+# --- UTILITAIRES ---
+def compute_optimal_threshold(y_true, y_scores):
+    best = {
+        'threshold': 0.50,
+        'precision': 0.0,
+        'recall': 0.0,
+        'f1': 0.0,
+    }
+    for threshold in np.arange(0.0, 1.01, 0.01):
+        y_pred = (y_scores >= threshold).astype(int)
+        f1 = f1_score(y_true, y_pred, zero_division=0)
+        if f1 > best['f1']:
+            best['threshold'] = float(threshold)
+            best['precision'] = float(precision_score(y_true, y_pred, zero_division=0))
+            best['recall'] = float(recall_score(y_true, y_pred, zero_division=0))
+            best['f1'] = float(f1)
+    return best
+
+
+def get_reference_curve_for_evaluation(pdl_id, df_conso, n_days):
+    ts = get_pdl_timeseries(pdl_id, df_conso)
+    if ts.empty:
+        return None
+    if len(ts) < 1:
+        return None
+    return ts['daily_kwh'].tolist()
 
 # --- INTERFACE STREAMLIT ---
 def main():
@@ -106,6 +134,37 @@ def main():
                     fig.add_trace(go.Scatter(x=c['timestamps'], y=c['values'], mode='lines', name=f"synth_{c['synthetic_id']}", opacity=0.8))
                 fig.update_layout(title=f"Courbes synthétiques - {synth_type}", xaxis_title='Date', yaxis_title='kWh')
                 st.plotly_chart(fig, use_container_width=True)
+
+                # Évaluation de la pertinence des courbes générées
+                reference_curve = get_reference_curve_for_evaluation(pdl_test_id, df_conso, int(synth_days))
+                if reference_curve is not None and len(reference_curve) >= int(synth_days):
+                    eval_scores = []
+                    for c in curves:
+                        r2 = compute_r2_similarity(reference_curve[-int(synth_days):], c['values'])
+                        eval_scores.append({'Courbe': f"synth_{c['synthetic_id']}", 'R2': r2})
+
+                    df_eval = pd.DataFrame(eval_scores)
+                    avg_r2 = df_eval['R2'].mean()
+
+                    st.markdown("### 🔎 Pertinence des courbes générées")
+                    st.markdown(
+                        "Score R² calculé par rapport aux derniers jours réels du PDL sélectionné. "
+                        "Plus le score est proche de 1, plus la forme et l'amplitude sont réalistes."
+                    )
+                    st.dataframe(df_eval.style.format({'R2': '{:.4f}'}), use_container_width=True)
+                    st.metric("R² moyen", f"{avg_r2:.4f}")
+                    if avg_r2 >= 0.75:
+                        st.success("Les courbes générées semblent globalement réalistes par rapport aux données réelles.")
+                    elif avg_r2 >= 0.50:
+                        st.info("Les courbes générées montrent une similarité raisonnable, mais la génération peut encore être améliorée.")
+                    else:
+                        st.warning("Les courbes générées sont encore loin des données réelles. Il faut ajuster le modèle ou la génération.")
+                else:
+                    st.markdown("### 🔎 Pertinence des courbes générées")
+                    st.warning(
+                        "Impossible de calculer le R² : la période de référence réelle est trop courte ou indisponible. "
+                        "Sélectionnez un PDL avec suffisamment de données historiques."
+                    )
 
     # --- TAB 2 : BACKTESTING & PRÉDICTION ---
     with tab2:
@@ -242,8 +301,10 @@ Chaque modèle utilise son propre lookback configuré à gauche pour optimiser s
                 X_test_scaled = scaler.transform(X_test_imputed)
                 
                 # Paramètre visible pour la régression logistique : seul le seuil de décision
-                st.markdown("#### Paramètres Régression Logistique")
+                st.markdown("#### Paramètre Régression Logistique")
                 threshold = st.slider("Seuil de validation", min_value=0.0, max_value=1.0, value=0.50, step=0.01)
+                optimal_lr_placeholder = st.empty()
+                optimal_nn_placeholder = st.empty()
 
                 # (Cross-validation 5-fold removed — UI keeps only threshold)
 
@@ -346,13 +407,20 @@ Chaque modèle utilise son propre lookback configuré à gauche pour optimiser s
                     y_pred_nn = (y_score_nn >= 0.5).astype(int)
 
                 # Prédictions par défaut du réseau de neurones pré-entraîné
+                time_start_nn = time.time()
+                
                 if y_pred_nn is None:
                     X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
                     with torch.no_grad():
                         y_score_nn = nn_model(X_test_tensor).squeeze().numpy()
                     y_pred_nn = (y_score_nn >= 0.5).astype(int)
+                
+                time_end_nn = time.time()
+                time_nn = time_end_nn - time_start_nn
 
                 # Entraîner la régression logistique sur les données prétraitées (hyperparamètres fixes)
+                time_start_lr = time.time()
+                
                 lr_model = LogisticRegression(
                     random_state=42,
                     penalty='l2',
@@ -367,12 +435,31 @@ Chaque modèle utilise son propre lookback configuré à gauche pour optimiser s
                 y_score_lr = lr_model.predict_proba(X_test_scaled)[:, 1]
                 y_pred_lr = (y_score_lr >= float(threshold)).astype(int)
                 
+                time_end_lr = time.time()
+                time_lr = time_end_lr - time_start_lr
+
+                # Seuil optimal calculé sur les métriques d'évaluation (maximisation du F1)
+                optimal_threshold_lr = compute_optimal_threshold(y_test, y_score_lr)
+                optimal_lr_placeholder.success(
+                    f"Seuil optimal LR : {optimal_threshold_lr['threshold']:.2f} "
+                    f"(F1={optimal_threshold_lr['f1']:.4f}, Precision={optimal_threshold_lr['precision']:.4f}, Recall={optimal_threshold_lr['recall']:.4f})",
+                    icon="✅"
+                )
+
+                optimal_threshold_nn = compute_optimal_threshold(y_test, y_score_nn)
+                y_pred_nn = (y_score_nn >= optimal_threshold_nn['threshold']).astype(int)
+                optimal_nn_placeholder.success(
+                    f"Seuil optimal NN : {optimal_threshold_nn['threshold']:.2f} "
+                    f"(F1={optimal_threshold_nn['f1']:.4f}, Precision={optimal_threshold_nn['precision']:.4f}, Recall={optimal_threshold_nn['recall']:.4f})",
+                    icon="✅"
+                )
+
         except Exception as e:
             st.error(f"Erreur lors du chargement des modèles : {e}")
             st.stop()
         
         # === SECTION 2 : MATRICES DE CONFUSION ===
-        st.markdown("### 2️⃣ Matrices de Confusion - Comparaison des Modèles")
+        st.markdown("### Matrices de Confusion - Comparaison des Modèles")
         
         col1, col2 = st.columns(2)
         
@@ -423,7 +510,7 @@ Chaque modèle utilise son propre lookback configuré à gauche pour optimiser s
             plt.close()
         
         # === SECTION 3 : MÉTRIQUES D'ÉVALUATION ===
-        st.markdown("### 3️⃣ Métriques d'Évaluation - Comparaison Détaillée")
+        st.markdown("### Métriques d'Évaluation - Comparaison Détaillée")
         
         # Calculer les métriques
         metrics_lr = {
@@ -522,10 +609,10 @@ Chaque modèle utilise son propre lookback configuré à gauche pour optimiser s
                 - Précision: {metrics_lr['Precision']:.1%}
                 - Recall: {metrics_lr['Recall']:.1%}
                 - F1-Score: {metrics_lr['F1-Score']:.4f}
+                - ⏱️ Temps: {time_lr:.4f}s
                 
                 ⚠️ **Limitations:**
-                - Peut être suboptimale pour patterns non-linéaires
-                - Performance: {metrics_lr['F1-Score']:.1%}
+                - Peut être moins bonne pour patterns non-linéaires
                 """)
         
         with col2:
@@ -538,12 +625,13 @@ Chaque modèle utilise son propre lookback configuré à gauche pour optimiser s
                 - Précision: {metrics_nn['Precision']:.1%}
                 - Recall: {metrics_nn['Recall']:.1%}
                 - F1-Score: {metrics_nn['F1-Score']:.4f}
+                - ⏱️ Temps: {time_nn:.4f}s
                 
                 ⚠️ **Limitations:**
                 - Moins interprétable ("boîte noire")
                 - Entraînement plus lent
-                - Performance: {metrics_nn['F1-Score']:.1%}
                 """)
+
         
         # Recommandation finale
         st.markdown("---")

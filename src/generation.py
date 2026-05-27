@@ -13,6 +13,38 @@ from typing import List, Dict
 VALID_RESIDENCE_TYPES = {"principale", "secondaire"}
 
 
+def compute_r2_similarity(
+    real_curve: List[float],
+    synthetic_curve: List[float],
+) -> float:
+    """
+    Calculer le coefficient de détermination R² entre deux courbes.
+
+    Cette mesure évalue l'ajustement global en amplitude des valeurs.
+    Elle ne prend pas en compte un décalage temporel entre les courbes.
+
+    Args:
+        real_curve: Courbe réelle (liste de valeurs)
+        synthetic_curve: Courbe synthétique (liste de valeurs)
+
+    Returns:
+        R² : 1.0 = parfait, 0.0 = aussi bien que la moyenne, < 0 = pire que la moyenne
+    """
+    real = np.asarray(real_curve, dtype=float)
+    synth = np.asarray(synthetic_curve, dtype=float)
+
+    if real.shape != synth.shape:
+        raise ValueError("Les deux courbes doivent avoir la même longueur pour calculer R².")
+
+    ss_res = np.sum((real - synth) ** 2)
+    ss_tot = np.sum((real - real.mean()) ** 2)
+
+    if ss_tot == 0:
+        return 1.0 if ss_res == 0 else 0.0
+
+    return float(1.0 - ss_res / ss_tot)
+
+
 def generate_synthetic_curves_with_model(
     residence_type: str,
     n_curves: int = 1,
