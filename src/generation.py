@@ -13,7 +13,13 @@ from typing import List, Dict
 VALID_RESIDENCE_TYPES = {"principale", "secondaire"}
 
 
-def generate_synthetic_curves_with_model(residence_type: str, n_curves: int = 1, n_days: int = 365, seed=None) -> List[Dict]:
+def generate_synthetic_curves_with_model(
+    residence_type: str,
+    n_curves: int = 1,
+    n_days: int = 365,
+    seed=None,
+    start_date: str = "2023-01-01",
+) -> List[Dict]:
     """
     Générer des courbes synthétiques en utilisant les modèles DC-WGAN.
     
@@ -22,6 +28,7 @@ def generate_synthetic_curves_with_model(residence_type: str, n_curves: int = 1,
         n_curves: Nombre de courbes à générer
         n_days: Nombre de jours par courbe
         seed: Seed optionnelle pour reproductibilité
+        start_date: Date de début des timestamps générés (YYYY-MM-DD)
     
     Returns:
         Liste de courbes synthétiques générées
@@ -43,13 +50,13 @@ def generate_synthetic_curves_with_model(residence_type: str, n_curves: int = 1,
     model = ResidenceModel(residence_type, seed=seed)
     
     curves = []
+    start_date = pd.to_datetime(start_date)
     for i in range(n_curves):
         synth_values = model.generate_synthetic_curve(n_days=n_days)
         
         # Créer les timestamps
         timestamps = []
         values = []
-        start_date = pd.to_datetime('2023-01-01')
         
         for day_idx, value in enumerate(synth_values):
             date = start_date + pd.Timedelta(days=day_idx)

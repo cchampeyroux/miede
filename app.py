@@ -99,6 +99,7 @@ def main():
                         n_curves=int(synth_count),
                         n_days=int(synth_days),
                         seed=seed_val,
+                        start_date=df_conso['date'].min(),
                     )
                 fig = go.Figure()
                 for c in curves:
