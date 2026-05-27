@@ -51,6 +51,9 @@ def generate_synthetic_curves_with_model(
     n_days: int = 365,
     seed=None,
     start_date: str = "2023-01-01",
+    cluster_id: int = None,
+    df_conso: pd.DataFrame = None,
+    labels_df: pd.DataFrame = None,
 ) -> List[Dict]:
     """
     Générer des courbes synthétiques en utilisant les modèles DC-WGAN.
@@ -61,6 +64,9 @@ def generate_synthetic_curves_with_model(
         n_days: Nombre de jours par courbe
         seed: Seed optionnelle pour reproductibilité
         start_date: Date de début des timestamps générés (YYYY-MM-DD)
+        cluster_id: ID du cluster (optionnel)
+        df_conso: DataFrame de consommation (optionnel si cluster_id fourni)
+        labels_df: DataFrame des labels (optionnel si cluster_id fourni)
     
     Returns:
         Liste de courbes synthétiques générées
@@ -78,8 +84,8 @@ def generate_synthetic_curves_with_model(
         np.random.seed(seed)
         random.seed(seed)
     
-    # Créer le modèle pour le type de résidence
-    model = ResidenceModel(residence_type, seed=seed)
+    # Créer le modèle pour le type de résidence (avec cluster si fourni)
+    model = ResidenceModel(residence_type, seed=seed, cluster_id=cluster_id, df_conso=df_conso, labels_df=labels_df)
     
     curves = []
     start_date = pd.to_datetime(start_date)

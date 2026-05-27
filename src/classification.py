@@ -73,9 +73,9 @@ def load_labels() -> pd.DataFrame:
     df = pd.read_csv(source)
 
     # to make subsequent loads fast we also dump a parquet copy nearby
-    parquet_path = os.path.join(os.path.dirname(source), "RES2-6-9-labels.parquet")
+    csv_path = os.path.join(os.path.dirname(source), "RES2-6-9-labels.csv")
     try:
-        df.to_parquet(parquet_path, index=False)
+        df.to_csv(csv_path, index=False)
     except Exception:  # pragma: no cover - best effort
         pass
     return df

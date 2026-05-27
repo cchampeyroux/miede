@@ -129,20 +129,40 @@ class ResidenceModel:
     - Génère des courbes synthétiques cohérentes avec les patterns observés
     """
     
-    def __init__(self, residence_type: str, seed: int = 42):
+    def __init__(self, residence_type: str, seed: int = 42, cluster_id: int = None, df_conso: pd.DataFrame = None, labels_df: pd.DataFrame = None):
         """
         Initialiser le modèle.
         
         Args:
             residence_type: "principale" ou "secondaire"
             seed: Seed pour reproductibilité
+            cluster_id: ID du cluster (optionnel)
+            df_conso: DataFrame de consommation (optionnel)
+            labels_df: DataFrame des labels (optionnel)
         """
         self.residence_type = residence_type
         self.seed = seed
+        self.cluster_id = cluster_id
         np.random.seed(seed)
         
-        # Charger et analyser les données réelles
-        self.real_data = load_data_by_residence_type(residence_type)
+        # Charger les données si non fournies
+        if df_conso is None:
+            self.real_data = load_data_by_residence_type(residence_type)
+        else:
+            # Filtrer df_conso par type si les labels sont fournis
+            if labels_df is not None:
+                label = 0 if residence_type == "principale" else 1
+                ids = labels_df[labels_df['label'] == label]['id'].values
+                self.real_data = df_conso[df_conso['ID'].isin(ids)].copy()
+            else:
+                # Si df_conso est déjà filtré ou contient les infos nécessaires
+                self.real_data = df_conso.copy()
+
+        # Filtrer par cluster si demandé
+        if cluster_id is not None and 'cluster' in self.real_data.columns:
+            self.real_data = self.real_data[self.real_data['cluster'] == cluster_id].copy()
+            print(f"[{residence_type}] Filtrage par cluster {cluster_id} : {len(self.real_data['ID'].unique())} PDLs")
+        
         self._extract_real_characteristics()
     
     def _extract_real_characteristics(self):
