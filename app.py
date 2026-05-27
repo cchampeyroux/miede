@@ -23,13 +23,13 @@ from src.forecast import (
     load_cluster_assignments
 )
 from src.generation import generate_synthetic_curves_with_model, compute_r2_similarity
-from src.clustering import get_features_pdl
+from src.clustering import get_features_pdl, cluster_to_label
 from src.classification import (
     load_labels,
     feature_cols,
     SimpleNN
 )
-from src.models import load_data_by_residence_type
+from src.models import ResidenceModel
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Energy Forecast Dashboard", layout="wide")
@@ -88,8 +88,8 @@ def main():
     st.sidebar.header("Configuration")
     
     # Préparation des options pour la sidebar
-    df_unique_pdl = df_conso[["ID", "cluster"]].drop_duplicates()
-    options = df_unique_pdl.apply(lambda x: f"{x['ID']} | Cluster: {x['cluster']}", axis=1).tolist()
+    df_unique_pdl = df_conso[["ID", "cluster"]].dropna(subset=['cluster']).drop_duplicates()
+    options = df_unique_pdl.apply(lambda x: f"{int(x['ID'])} | Cluster: {int(x['cluster'])}", axis=1).tolist()
     
     # Sélection unique dans la sidebar
     selection = st.sidebar.selectbox("Choisir le PDL (ID)", options, index=0)
@@ -125,8 +125,16 @@ def main():
                 # Option pour filtrer par cluster
                 use_cluster = st.checkbox("Filtrer par cluster", value=True)
                 if use_cluster:
-                    available_clusters = sorted(df_conso['cluster'].dropna().unique().astype(int))
-                    synth_cluster = st.selectbox("Numéro du cluster", options=available_clusters, index=available_clusters.index(cluster_id) if cluster_id in available_clusters else 0)
+                    # Filtrer les clusters selon le type de résidence
+                    target_label = 0 if synth_type == "principale" else 1
+                    available_clusters = sorted([c for c, l in cluster_to_label.items() if l == target_label])
+                    
+                    # Sélection par défaut : si le cluster du PDL sidebar est dans la liste, on le prend
+                    default_idx = 0
+                    if cluster_id in available_clusters:
+                        default_idx = available_clusters.index(cluster_id)
+                    
+                    synth_cluster = st.selectbox("Numéro du cluster", options=available_clusters, index=default_idx)
                 else:
                     synth_cluster = None
                 
@@ -137,57 +145,67 @@ def main():
             if st.button("Générer et afficher"):
                 seed_val = int(synth_seed) if synth_seed != 0 else None
                 
-                # Calculer la courbe de référence en premier
-                reference_curve = None
-                reference_dates = None
-                try:
-                    # Charger les données réelles du même type de résidence (et cluster si demandé)
-                    df_type = load_data_by_residence_type(synth_type)
-                    
-                    # Fusionner avec les clusters si besoin
-                    cluster_info = load_cluster_assignments()
-                    if 'ID' not in cluster_info.columns and cluster_info.index.name == 'ID':
-                        cluster_info = cluster_info.reset_index()
-                    df_type = pd.merge(df_type, cluster_info, on='ID', how='inner')
-                    
-                    if synth_cluster is not None:
-                        df_type = df_type[df_type['cluster'] == synth_cluster]
-
-                    df_type['date'] = pd.to_datetime(df_type['date'])
-                    df_type = df_type.sort_values(['ID', 'date'])
-                    
-                    # Récupérer les séries de longueur suffisante
-                    last_n = int(synth_days)
-                    ref_curves = []
-                    
-                    for pid in df_type['ID'].unique():
-                        ts = df_type[df_type['ID'] == pid].sort_values('date')
-                        vals = ts['daily_kwh'].values[-last_n:]
-                        if len(vals) == last_n:
-                            ref_curves.append(vals)
-                    
-                    if len(ref_curves) > 0:
-                        reference_curve = np.mean(ref_curves, axis=0)
-                        # Créer les dates pour la courbe de référence
-                        reference_dates = [df_conso['date'].min() + timedelta(days=i) for i in range(last_n)]
-                except Exception:
-                    pass
+                with st.spinner("Initialisation du modèle et calcul de la référence..."):
+                    try:
+                        # Initialiser le modèle une seule fois
+                        model = ResidenceModel(
+                            residence_type=synth_type,
+                            seed=seed_val,
+                            cluster_id=synth_cluster,
+                            df_conso=df_conso
+                        )
+                        
+                        # 1. Calculer la courbe de référence en utilisant les données du modèle
+                        reference_curve = None
+                        reference_dates = None
+                        
+                        if model.real_curves:
+                            all_ref_vals = []
+                            for curve in model.real_curves:
+                                # Redimensionner chaque courbe réelle à la longueur demandée (interpolation)
+                                if len(curve) != int(synth_days):
+                                    indices = np.linspace(0, len(curve) - 1, int(synth_days))
+                                    curve = np.interp(indices, np.arange(len(curve)), curve)
+                                all_ref_vals.append(curve)
+                            
+                            if all_ref_vals:
+                                reference_curve = np.mean(all_ref_vals, axis=0)
+                                # Utiliser les mêmes dates de début que pour la génération
+                                start_date = pd.to_datetime(df_conso['date'].min())
+                                reference_dates = [start_date + timedelta(days=i) for i in range(int(synth_days))]
+                    except Exception as e:
+                        st.error(f"Erreur d'initialisation du modèle: {e}")
+                        st.stop()
                 
-                with st.spinner("Génération en cours..."):
-                    curves = generate_synthetic_curves_with_model(
-                        residence_type=synth_type,
-                        n_curves=int(synth_count),
-                        n_days=int(synth_days),
-                        seed=seed_val,
-                        start_date=df_conso['date'].min(),
-                        cluster_id=synth_cluster,
-                        df_conso=df_conso
-                    )
+                with st.spinner("Génération des courbes synthétiques..."):
+                    try:
+                        # 2. Générer les courbes synthétiques
+                        curves = []
+                        start_date = pd.to_datetime(df_conso['date'].min())
+                        for i in range(int(synth_count)):
+                            synth_values = model.generate_synthetic_curve(n_days=int(synth_days))
+                            
+                            # Créer les timestamps et valeurs
+                            timestamps = []
+                            values = []
+                            for day_idx, value in enumerate(synth_values):
+                                date = start_date + timedelta(days=day_idx)
+                                timestamps.append(date)
+                                values.append(round(float(value), 4))
+                            
+                            curves.append({
+                                "synthetic_id": i + 1,
+                                "timestamps": timestamps,
+                                "values": values,
+                            })
+                    except Exception as e:
+                        st.error(f"Erreur lors de la génération: {e}")
+                        st.stop()
                 
-                # Créer le graphique avec la courbe de référence
+                # 3. Créer le graphique
                 fig = go.Figure()
                 
-                # Ajouter la courbe de référence en noir (sans synthétique id)
+                # Ajouter la courbe de référence en noir
                 if reference_curve is not None and reference_dates is not None:
                     fig.add_trace(go.Scatter(
                         x=reference_dates, 
@@ -200,13 +218,24 @@ def main():
                 
                 # Ajouter les courbes synthétiques
                 for c in curves:
-                    fig.add_trace(go.Scatter(x=c['timestamps'], y=c['values'], mode='lines', name=f"synth_{c['synthetic_id']}", opacity=0.8))
+                    fig.add_trace(go.Scatter(
+                        x=c['timestamps'], 
+                        y=c['values'], 
+                        mode='lines', 
+                        name=f"synth_{c['synthetic_id']}", 
+                        opacity=0.8
+                    ))
                 
                 title_suffix = f" (Cluster {synth_cluster})" if synth_cluster is not None else ""
-                fig.update_layout(title=f"Courbes synthétiques - {synth_type}{title_suffix}", xaxis_title='Date', yaxis_title='kWh')
+                fig.update_layout(
+                    title=f"Courbes synthétiques - {synth_type}{title_suffix}", 
+                    xaxis_title='Date', 
+                    yaxis_title='kWh',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Évaluation de la pertinence : moyenne des courbes du même type de résidence
+                # Évaluation de la pertinence
                 try:
                     if reference_curve is not None:
                         eval_scores = []
@@ -219,28 +248,23 @@ def main():
 
                         st.markdown("### 🔎 Pertinence des courbes générées")
                         st.markdown(
-                            "Score R² calculé par rapport à la moyenne des derniers jours réels des résidences du même type. "
+                            "Score R² calculé par rapport à la moyenne interpolée des données réelles du cluster/type sélectionné. "
                             "Plus le score est proche de 1, plus la forme et l'amplitude sont réalistes."
                         )
                         st.dataframe(df_eval.style.format({'R2': '{:.4f}'}), use_container_width=True)
                         st.metric("R² moyen", f"{avg_r2:.4f}")
+                        
                         if avg_r2 >= 0.75:
                             st.success("Les courbes générées semblent globalement réalistes par rapport aux données réelles.")
                         elif avg_r2 >= 0.50:
-                            st.info("Les courbes générées montrent une similarité raisonnable, mais la génération peut encore être améliorée.")
+                            st.info("Les courbes générées montrent une similarité raisonnable.")
                         else:
-                            st.warning("Les courbes générées sont encore loin des données réelles. Il faut ajuster le modèle ou la génération.")
+                            st.warning("Les courbes générées divergent significativement des données réelles.")
                     else:
                         st.markdown("### 🔎 Pertinence des courbes générées")
-                        st.warning(
-                            "Impossible de calculer le R² : pas assez de résidences du même type avec suffisamment de données. "
-                            "Sélectionnez un type avec plus d'historiques."
-                        )
+                        st.warning("Impossible de calculer la référence : aucune donnée réelle de longueur suffisante ou cluster vide.")
                 except Exception as e:
-                    st.markdown("### 🔎 Pertinence des courbes générées")
-                    st.warning(
-                        f"Erreur lors du calcul du R² : {e} "
-                    )
+                    st.error(f"Erreur lors du calcul du R² : {e}")
 
     # --- TAB 2 : BACKTESTING & PRÉDICTION ---
     with tab2:
