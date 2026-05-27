@@ -2,7 +2,6 @@
 
 ## Configuration Initiale
 
-### GLOBALEMENT
 Mettre les CSV dans le dossier `data/`:
 - `RES2-6-9.csv` - Données brutes de consommation
 - `RES2-6-9-labels.csv` - Labels des types de résidences
@@ -12,7 +11,6 @@ Mettre les CSV dans le dossier `data/`:
 # Cloner le repo depuis le dossier cible
 git clone "https://url..."
 
-# Créer une branche si besoin
 
 # Ouvrir visual studio et ajouter le dossier au workspace
 # File -> Add folder to workspace
@@ -25,12 +23,10 @@ python -m venv .venv
 source .venv/bin/activate      # Mac/Linux
 
 # Installer les paquets
-pip3 install -r requirements.txt
+pip install -r requirements.txt
 
 # Avant de commit : vérifier qu'on est à jour
 git pull
-
-# Faire le commit via VS Code (stage et commentaire)
 
 # Synchroniser
 git push
@@ -41,12 +37,14 @@ pip freeze > requirements.txt && git add && git commit && git push
 
 ---
 
-## Architecture du Projet
 
-Pour lancer le dashboard : 
+## Lancement du dashboard : 
 ```python
 streamlit run .\app.py
 ```
+
+
+## Architecture du Projet
 
 ### Structure `src/`
 
