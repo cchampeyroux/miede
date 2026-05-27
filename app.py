@@ -167,7 +167,7 @@ Chaque modèle utilise son propre lookback configuré à gauche pour optimiser s
 
         st.markdown("---")
         st.subheader("Prévisions du futur réel")
-        forecast_days = st.number_input("Jours à prédire (Futur)", 1, 30, 7)
+        forecast_days = st.number_input("Jours à prédire (Futur)", 1, 365, 7)
 
         if st.button("Générer les prévisions"):
             with st.spinner("Calcul en cours..."):

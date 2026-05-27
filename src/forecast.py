@@ -289,7 +289,10 @@ def train_and_predict_models(pdl_id, df_consumption, days_ahead=7,
             'error': 'pmdarima not installed: auto_arima unavailable'
         }
 
-    # ===== 3. LSTM (Séquences Longues) =====
+
+
+
+    # ===== 3. LSTM =====
     try:
         # For LSTM, use the recent window (default 365 days if available)
         ts_lstm = timeseries.tail(max(365, lookback_lstm + 10)).copy()
