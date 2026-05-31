@@ -124,9 +124,9 @@ class ResidenceModel:
     """
     Modèle pour générer et évaluer des courbes synthétiques de consommation.
     
-    Architecture: DC-WGAN Conditionnel simplifié
-    - Utilise les caractéristiques des données réelles comme "condition"
-    - Génère des courbes synthétiques cohérentes avec les patterns observés
+    Architecture: Modèle statistique conditionnel par échantillonnage
+    - Utilise le filtrage par caractéristiques réelles (type, cluster) comme "condition"
+    - Génère des courbes par application de perturbations aléatoires sur des bases réelles
     """
     
     def __init__(self, residence_type: str, seed: int = 42, cluster_id: int = None, df_conso: pd.DataFrame = None, labels_df: pd.DataFrame = None):
@@ -166,8 +166,7 @@ class ResidenceModel:
         self._extract_real_characteristics()
     
     def _extract_real_characteristics(self):
-        """Extraire les caractéristiques des données réelles pour l'entraînement"""
-        # Grouper par ID et calculer les caractéristiques
+        """Extraire les caractéristiques et profils des données réelles pour la génération"""        # Grouper par ID et calculer les caractéristiques
         self.real_characteristics = []
         self.real_curves = []
         
@@ -311,16 +310,10 @@ class ResidenceModel:
     
     def measure_repetition_rate(self, synthetic_curves: List[np.ndarray], top_n: int = 5) -> float:
         """
-        Mesurer le taux de répétition (mode collapse detection).
+        Mesurer le taux de similitude entre les courbes générées (détection de redondance).
         
-        Comparer les plus proches voisins parmi les courbes générées.
-        
-        Args:
-            synthetic_curves: Liste de courbes générées
-            top_n: Nombre de voisins les plus proches à considérer
-        
-        Returns:
-            Taux moyen de similarité des voisins les plus proches
+        Permet de vérifier si les perturbations appliquées offrent assez de diversité
+        ou si les courbes générées se ressemblent trop.
         """
         if len(synthetic_curves) < 2:
             return 0.0

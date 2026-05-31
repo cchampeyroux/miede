@@ -1,8 +1,8 @@
 """
 Génération de courbes synthétiques de consommation électrique.
 
-Utilise les modèles DC-WGAN Conditionnel pour générer des courbes réalistes
-pour résidences principales et secondaires.
+Utilise un modèle statistique conditionnel basé sur l'échantillonnage et
+la perturbation de données réelles pour résidences principales et secondaires.
 """
 
 import numpy as np
@@ -56,7 +56,7 @@ def generate_synthetic_curves_with_model(
     labels_df: pd.DataFrame = None,
 ) -> List[Dict]:
     """
-    Générer des courbes synthétiques en utilisant les modèles DC-WGAN.
+    Générer des courbes synthétiques à l'aide d'un modèle statistique conditionnel.
     
     Args:
         residence_type: "principale" ou "secondaire"
@@ -107,7 +107,7 @@ def generate_synthetic_curves_with_model(
             "freq": "D",
             "timestamps": timestamps,
             "values": values,
-            "source": "synthetic_gan",
+            "source": "synthetic_statistical",
         })
     
     return curves
@@ -117,7 +117,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Génération de courbes synthétiques de consommation électrique avec modèles GANs."
+        description="Génération de courbes synthétiques de consommation électrique avec modèles statistiques conditionnels."
     )
     parser.add_argument(
         "--type",
