@@ -2,7 +2,7 @@
 Modèles de génération de courbes synthétiques pour résidences principales et secondaires.
 Basé sur les recommandations du document "DeepCourboGen - Génération de courbes de charge synthétiques"
 
-Architecture: DC-WGAN Conditionnel (Wasserstein GAN)
+
 Objectifs:
   - Générer des courbes de consommation réalistes
   - Capturer les 3 niveaux de caractéristiques (distribution, variationnelles, individuelles)

@@ -115,8 +115,8 @@ def main():
 
     # --- TAB 4 : GÉNÉRATION ---
     with tab4:
-        st.subheader("Génération de courbes synthétiques (GAN)")
-        with st.expander("Générer des courbes synthétiques (GAN)", expanded=True):
+        st.subheader("Génération de courbes synthétiques")
+        with st.expander("Générer des courbes synthétiques", expanded=True):
             col1, col2 = st.columns(2)
             with col1:
                 synth_type = st.selectbox("Type de résidence", options=["principale", "secondaire"], index=0)
